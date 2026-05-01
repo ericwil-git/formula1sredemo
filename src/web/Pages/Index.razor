@@ -1,0 +1,35 @@
+@page "/"
+@namespace F1.Web.Pages
+@inject FileGeneratorClient FileGen
+
+<h1>Season browser</h1>
+<p>Pick a year to see the calendar of events.</p>
+
+<form @onsubmit="Load">
+    <label>Year:
+        <input type="number" @bind="year" min="2018" max="2024" />
+    </label>
+    <button type="submit">Load</button>
+</form>
+
+@if (csv is not null)
+{
+    <h2>@year season</h2>
+    <pre>@csv</pre>
+    <!-- TODO(spec §7): parse CSV into a sortable table; link each row to /race/{year}/{round}. -->
+}
+
+@code {
+    private int year = 2024;
+    private string? csv;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        csv = await FileGen.GetSeasonCsvAsync(year);
+    }
+}

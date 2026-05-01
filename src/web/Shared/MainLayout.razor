@@ -1,0 +1,23 @@
+@namespace F1.Web.Shared
+@inherits LayoutComponentBase
+
+<div class="page">
+    <header class="topbar">
+        <div class="brand">F1 Insights — NBCU Sports Demo</div>
+        <nav>
+            <a href="/">Season</a>
+            <a href="/race/2024/8">Race</a>
+            <a href="/qualifying/2024/8">Qualifying</a>
+            <a href="/lap-explorer">Lap Explorer</a>
+            <a href="/compare">Compare</a>
+        </nav>
+    </header>
+
+    <main>
+        @Body
+    </main>
+
+    <footer>
+        <small>Microsoft customer demo · data via FastF1 · @DateTime.UtcNow.Year</small>
+    </footer>
+</div>

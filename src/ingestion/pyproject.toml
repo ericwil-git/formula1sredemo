@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "f1-ingest"
+version = "0.1.0"
+description = "FastF1 -> Azure SQL MI ingestion service for the F1 SRE demo."
+requires-python = ">=3.11,<3.12"
+authors = [{ name = "Eric Wilson", email = "eric.wilson@microsoft.com" }]
+license = { text = "MIT" }
+dependencies = [
+    "fastf1>=3.4.0",
+    "pandas>=2.2.0",
+    "pyodbc>=5.1.0",
+    "prometheus-client>=0.20.0",
+]
+
+[project.scripts]
+f1-ingest = "f1_ingest.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]

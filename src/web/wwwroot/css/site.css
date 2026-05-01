@@ -1,0 +1,14 @@
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; background: #0d1117; color: #e6edf3; }
+.page { display: flex; flex-direction: column; min-height: 100vh; }
+.topbar { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; background: #161b22; border-bottom: 1px solid #30363d; }
+.topbar .brand { font-weight: 700; color: #f78166; }
+.topbar nav a { color: #c9d1d9; text-decoration: none; margin-right: 1rem; }
+.topbar nav a:hover { color: #58a6ff; text-decoration: underline; }
+main { padding: 1.5rem; flex: 1; }
+footer { padding: 1rem 1.5rem; border-top: 1px solid #30363d; color: #8b949e; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #30363d; text-align: left; }
+th { background: #161b22; }
+pre { background: #0a0e14; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+#blazor-error-ui { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: #b71c1c; color: white; padding: 0.75rem; }
+.reload, .dismiss { color: white; margin-left: 1rem; cursor: pointer; }

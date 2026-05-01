@@ -1,0 +1,40 @@
+@page "/compare"
+@namespace F1.Web.Pages
+@inject FileGeneratorClient FileGen
+
+<h1>Driver compare</h1>
+<p>Overlay two drivers' lap times across a race.</p>
+
+<form @onsubmit="Load">
+    <label>Year: <input type="number" @bind="year" /></label>
+    <label>Round: <input type="number" @bind="round" /></label>
+    <label>Driver A: <input type="text" @bind="driverA" /></label>
+    <label>Driver B: <input type="text" @bind="driverB" /></label>
+    <button type="submit">Compare</button>
+</form>
+
+@if (csv is not null)
+{
+    <h2>@driverA vs @driverB — @year round @round</h2>
+    <pre>@csv</pre>
+    <!-- TODO(spec §7): filter the race CSV to the two drivers; render an overlay
+         line chart of LapTimeMs vs LapNumber with sector deltas highlighted. -->
+}
+
+@code {
+    private int year = 2024;
+    private int round = 8;
+    private string driverA = "VER";
+    private string driverB = "LEC";
+    private string? csv;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        csv = await FileGen.GetRaceCsvAsync(year, round);
+    }
+}

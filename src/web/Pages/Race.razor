@@ -1,0 +1,27 @@
+@page "/race/{Year:int}/{Round:int}"
+@namespace F1.Web.Pages
+@inject FileGeneratorClient FileGen
+
+<h1>Race results — @Year round @Round</h1>
+
+@if (csv is null)
+{
+    <p>Loading…</p>
+}
+else
+{
+    <pre>@csv</pre>
+    <!-- TODO(spec §7): render lap-by-lap table + Chart.js position-by-lap chart. -->
+}
+
+@code {
+    [Parameter] public int Year { get; set; }
+    [Parameter] public int Round { get; set; }
+
+    private string? csv;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        csv = await FileGen.GetRaceCsvAsync(Year, Round);
+    }
+}

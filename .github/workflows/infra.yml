@@ -1,0 +1,95 @@
+name: infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  LOCATION: centralus
+  TEMPLATE: infra/main.bicep
+  PARAMETERS: infra/parameters/dev.bicepparam
+
+jobs:
+  what-if:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Bicep what-if
+        env:
+          SQL_MI_PWD: ${{ secrets.SQL_MI_PWD }}
+          VM_PWD: ${{ secrets.VM_PWD }}
+          FILEGEN_API_KEY: ${{ secrets.FILEGEN_API_KEY }}
+        run: |
+          az deployment sub what-if \
+            --location $LOCATION \
+            --template-file $TEMPLATE \
+            --parameters $PARAMETERS \
+            --parameters sqlMiAdminPassword=$SQL_MI_PWD \
+                         vmAdminPassword=$VM_PWD \
+                         fileGeneratorApiKey=$FILEGEN_API_KEY
+
+  deploy:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate
+        env:
+          SQL_MI_PWD: ${{ secrets.SQL_MI_PWD }}
+          VM_PWD: ${{ secrets.VM_PWD }}
+          FILEGEN_API_KEY: ${{ secrets.FILEGEN_API_KEY }}
+        run: |
+          az deployment sub validate \
+            --location $LOCATION \
+            --template-file $TEMPLATE \
+            --parameters $PARAMETERS \
+            --parameters sqlMiAdminPassword=$SQL_MI_PWD \
+                         vmAdminPassword=$VM_PWD \
+                         fileGeneratorApiKey=$FILEGEN_API_KEY
+
+      - name: Deploy
+        env:
+          SQL_MI_PWD: ${{ secrets.SQL_MI_PWD }}
+          VM_PWD: ${{ secrets.VM_PWD }}
+          FILEGEN_API_KEY: ${{ secrets.FILEGEN_API_KEY }}
+        run: |
+          az deployment sub create \
+            --name f1demo-$(date +%Y%m%d-%H%M%S) \
+            --location $LOCATION \
+            --template-file $TEMPLATE \
+            --parameters $PARAMETERS \
+            --parameters sqlMiAdminPassword=$SQL_MI_PWD \
+                         vmAdminPassword=$VM_PWD \
+                         fileGeneratorApiKey=$FILEGEN_API_KEY

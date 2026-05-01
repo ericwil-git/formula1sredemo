@@ -1,0 +1,143 @@
+name: apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - '.github/workflows/apps.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-f1demo-centeral
+  LOCATION: centralus
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore + publish
+        run: |
+          dotnet publish src/web/Web.csproj -c Release -o publish/web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: publish/web
+
+  build-filegenerator:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: filegenerator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish (win-x64, self-contained)
+        run: |
+          dotnet publish src/filegenerator/FileGenerator.csproj \
+            -c Release -r win-x64 --self-contained true \
+            -p:PublishSingleFile=false -o publish/filegenerator
+      - name: Zip
+        run: |
+          cd publish && zip -r filegenerator.zip filegenerator
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filegenerator
+          path: publish/filegenerator.zip
+
+  package-ingestion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip
+        run: |
+          cd src && zip -r ingestion.zip ingestion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ingestion
+          path: src/ingestion.zip
+
+  deploy-web:
+    needs: build-web
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: web
+          path: publish/web
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve web app name
+        id: app
+        run: |
+          name=$(az webapp list -g $RESOURCE_GROUP --query "[?starts_with(name,'app-f1demo')].name | [0]" -o tsv)
+          echo "name=$name" >> $GITHUB_OUTPUT
+      - name: Deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ steps.app.outputs.name }}
+          package: publish/web
+
+  deploy-vm:
+    needs: [build-filegenerator, package-ingestion]
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: filegenerator
+          path: ./pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: ingestion
+          path: ./pkg
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve VM name
+        id: vm
+        run: |
+          vm=$(az vm list -g $RESOURCE_GROUP --query "[?starts_with(name,'vm-f1demo')].name | [0]" -o tsv)
+          echo "name=$vm" >> $GITHUB_OUTPUT
+
+      # The simplest robust pattern: stage artifacts in a SAS-protected blob
+      # the operator can curl down. For a v1 demo we use az vm run-command
+      # with PowerShell that pulls from a temporary stage you control.
+      #
+      # PLACEHOLDER: replace the URL strategy with your storage account once
+      # you've decided where to stage the artifacts (e.g. a storage account
+      # provisioned next to the RG).
+      - name: Stage on VM via run-command
+        run: |
+          echo "Skipping VM file copy until artifact staging is wired."
+          echo "Would invoke:"
+          echo "  az vm run-command invoke -g $RESOURCE_GROUP -n ${{ steps.vm.outputs.name }} \\"
+          echo "    --command-id RunPowerShellScript \\"
+          echo "    --scripts @scripts/install-vm-deps.ps1"
+
+      - name: Run install-vm-deps.ps1
+        run: |
+          az vm run-command invoke \
+            -g $RESOURCE_GROUP -n ${{ steps.vm.outputs.name }} \
+            --command-id RunPowerShellScript \
+            --scripts @scripts/install-vm-deps.ps1

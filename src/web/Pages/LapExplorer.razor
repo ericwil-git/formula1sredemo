@@ -1,0 +1,41 @@
+@page "/lap-explorer"
+@namespace F1.Web.Pages
+@inject FileGeneratorClient FileGen
+
+<h1>Lap explorer</h1>
+<p>Pick a session and lap to see telemetry.</p>
+
+<form @onsubmit="Load">
+    <label>Year: <input type="number" @bind="year" /></label>
+    <label>Round: <input type="number" @bind="round" /></label>
+    <label>Session: <input type="text" @bind="session" /></label>
+    <label>Driver: <input type="text" @bind="driver" /></label>
+    <label>Lap: <input type="number" @bind="lap" /></label>
+    <button type="submit">Load</button>
+</form>
+
+@if (json is not null)
+{
+    <h2>Telemetry — @driver lap @lap</h2>
+    <pre>@json</pre>
+    <!-- TODO(spec §7): bind JSON samples to a Chart.js multi-axis chart (speed, throttle, brake, gear). -->
+}
+
+@code {
+    private int year = 2024;
+    private int round = 8;
+    private string session = "R";
+    private string driver = "VER";
+    private int lap = 42;
+    private string? json;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        json = await FileGen.GetLapDetailJsonAsync(year, round, session, driver, lap);
+    }
+}
