@@ -13,6 +13,13 @@ using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Run as a Windows service when launched by SCM. No-op when run interactively
+// (`dotnet run`), so local dev is unchanged.
+builder.Host.UseWindowsService(options =>
+{
+    options.ServiceName = "F1 FileGenerator";
+});
+
 // ---------------------------------------------------------------------------
 // Key Vault config provider (optional). When KeyVault:Uri is set, the VM's
 // managed identity reads two secrets and aliases them to the FileGenerator
