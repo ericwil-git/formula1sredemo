@@ -3,21 +3,20 @@
     Deploy F1.FileGenerator on the VM as a Windows service.
 
 .DESCRIPTION
-    1. Ensures git + .NET 8 SDK are installed (via Chocolatey).
-    2. Clones (or `git pull`s) the repo to D:\f1demo\repo.
-    3. Publishes FileGenerator (Release, framework-dependent, win-x64) to
-       D:\f1demo\filegenerator.
-    4. Generates a self-signed PFX for Kestrel HTTPS at D:\f1demo\certs\filegen.pfx.
-    5. Installs / replaces a Windows service "F1FileGenerator" running as
-       LocalSystem (so it can use the VM's managed identity for KV access).
-    6. Sets env vars on the service:
-         KeyVault__Uri                — for the KV config provider
-         Kestrel__CertificatePath     — PFX for HTTPS
-         Kestrel__CertificatePassword — random per install
-         ASPNETCORE_ENVIRONMENT       — Production
-    7. Starts the service.
+    Self-contained: downloads .NET 8 SDK (user-local) and PortableGit if not
+    already present (no admin elevation, no Chocolatey dependency). Then:
 
-    Runs idempotently — re-invoking re-pulls and restarts.
+    1. git clone / pull the repo to D:\f1demo\repo.
+    2. dotnet publish to D:\f1demo\filegenerator (framework-dependent).
+    3. Generate a self-signed PFX at D:\f1demo\certs\filegen.pfx.
+    4. Install/replace Windows service "F1FileGenerator" running as
+       LocalSystem (so DefaultAzureCredential resolves the VM's MI for KV).
+    5. Set machine env vars consumed by the service:
+         KeyVault__Uri, Kestrel__CertificatePath, Kestrel__CertificatePassword,
+         ASPNETCORE_ENVIRONMENT.
+    6. Start the service and smoke test https://localhost:8443/health.
+
+    Idempotent: re-running pulls latest main and restarts.
 
 .PARAMETER KeyVaultUri
     Full vault URI, e.g. https://kv-f1demo-wr4dcd.vault.azure.net/
@@ -41,65 +40,78 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference   = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$ServiceName     = 'F1FileGenerator'
-$AppDir          = 'D:\f1demo\filegenerator'
-$RepoDir         = 'D:\f1demo\repo'
-$CertDir         = 'D:\f1demo\certs'
-$CertPath        = Join-Path $CertDir 'filegen.pfx'
-$LogDir          = 'D:\f1-files\logs'
-$ProjectRelative = 'src\filegenerator\FileGenerator.csproj'
+$ServiceName = 'F1FileGenerator'
+$RootDir     = 'D:\f1demo'
+$ToolsDir    = Join-Path $RootDir 'tools'
+$DotnetDir   = Join-Path $ToolsDir 'dotnet'
+$GitDir      = Join-Path $ToolsDir 'git'
+$AppDir      = Join-Path $RootDir 'filegenerator'
+$RepoDir     = Join-Path $RootDir 'repo'
+$CertDir     = Join-Path $RootDir 'certs'
+$CertPath    = Join-Path $CertDir 'filegen.pfx'
+$LogDir      = 'D:\f1-files\logs'
+$ProjectRel  = 'src\filegenerator\FileGenerator.csproj'
 
-New-Item -ItemType Directory -Force -Path $CertDir, $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $ToolsDir, $CertDir, $LogDir | Out-Null
 
 # -------------------------------------------------------------------
-# 1. Tooling: git + .NET 8 SDK
+# 1a. .NET 8 SDK (user-local via dotnet-install.ps1, no admin needed)
 # -------------------------------------------------------------------
-if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
-    throw 'Chocolatey is missing. Run install-vm-deps.ps1 first.'
+$dotnetExe = Join-Path $DotnetDir 'dotnet.exe'
+if (-not (Test-Path $dotnetExe)) {
+    Write-Host '[1/7] downloading dotnet-install.ps1...'
+    $script = Join-Path $env:TEMP 'dotnet-install.ps1'
+    Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $script -UseBasicParsing
+    Write-Host '       installing .NET 8 SDK to D:\f1demo\tools\dotnet (~5 min)...'
+    & $script -Channel 8.0 -InstallDir $DotnetDir -NoPath | Out-Null
 }
+if (-not (Test-Path $dotnetExe)) { throw 'dotnet SDK install failed.' }
+& $dotnetExe --version | ForEach-Object { Write-Host "       SDK: $_" }
 
-if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
-    Write-Host '[1/7] installing git...'
-    choco install git -y --no-progress | Out-Null
-    $env:Path += ';C:\Program Files\Git\cmd'
+# -------------------------------------------------------------------
+# 1b. PortableGit (no admin)
+# -------------------------------------------------------------------
+$gitExe = Join-Path $GitDir 'cmd\git.exe'
+if (-not (Test-Path $gitExe)) {
+    Write-Host '[2/7] downloading PortableGit (~50 MB)...'
+    $url = 'https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/PortableGit-2.45.2-64-bit.7z.exe'
+    $tmp = Join-Path $env:TEMP 'PortableGit.7z.exe'
+    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+    Write-Host '       extracting...'
+    if (Test-Path $GitDir) { Remove-Item $GitDir -Recurse -Force }
+    & $tmp -y -o"$GitDir" -gm2 | Out-Null
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
 }
-
-# .NET 8 SDK is needed to publish; the runtime is already installed by
-# install-vm-deps.ps1. The SDK is ~700 MB; install once.
-if (-not (& dotnet --list-sdks 2>$null | Select-String -SimpleMatch '8.')) {
-    Write-Host '[1/7] installing .NET 8 SDK...'
-    choco install dotnet-8.0-sdk -y --no-progress | Out-Null
-    $env:Path += ';C:\Program Files\dotnet'
-}
-& dotnet --version | ForEach-Object { Write-Host "        SDK: $_" }
+if (-not (Test-Path $gitExe)) { throw 'PortableGit install failed.' }
 
 # -------------------------------------------------------------------
 # 2. Clone / pull
 # -------------------------------------------------------------------
-Write-Host '[2/7] sync repo...'
+Write-Host '[3/7] sync repo...'
 if (Test-Path (Join-Path $RepoDir '.git')) {
     Push-Location $RepoDir
-    & git fetch --all --quiet
-    & git checkout $GitBranch --quiet
-    & git reset --hard "origin/$GitBranch"
+    & $gitExe fetch --all --quiet
+    & $gitExe checkout $GitBranch --quiet
+    & $gitExe reset --hard "origin/$GitBranch"
     Pop-Location
 } else {
-    & git clone --branch $GitBranch --depth 1 $GitRepo $RepoDir
+    & $gitExe clone --branch $GitBranch --depth 1 $GitRepo $RepoDir
 }
+if (-not (Test-Path (Join-Path $RepoDir '.git'))) { throw 'git clone/pull failed.' }
 
 # -------------------------------------------------------------------
 # 3. Publish
 # -------------------------------------------------------------------
-Write-Host '[3/7] dotnet publish...'
-$projectPath = Join-Path $RepoDir $ProjectRelative
-& dotnet publish $projectPath `
+Write-Host '[4/7] dotnet publish (~3-5 min on first run)...'
+$projectPath = Join-Path $RepoDir $ProjectRel
+& $dotnetExe publish $projectPath `
     -c Release `
     -r win-x64 `
     --self-contained false `
     -o $AppDir `
     --nologo `
     -p:UseAppHost=true `
-    | Out-String | ForEach-Object { Write-Host $_ }
+    | ForEach-Object { Write-Host "       $_" }
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)" }
 
 # -------------------------------------------------------------------
@@ -107,7 +119,7 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)" }
 # -------------------------------------------------------------------
 $certPwdRaw = -join ((1..32) | ForEach-Object { [char](Get-Random -Min 65 -Max 90) })
 if (-not (Test-Path $CertPath)) {
-    Write-Host '[4/7] generating self-signed cert...'
+    Write-Host '[5/7] generating self-signed cert...'
     $cert = New-SelfSignedCertificate `
         -DnsName 'filegenerator.f1demo.local', 'localhost' `
         -CertStoreLocation 'cert:\LocalMachine\My' `
@@ -117,11 +129,10 @@ if (-not (Test-Path $CertPath)) {
         -KeyLength 2048
     $pwdSecure = ConvertTo-SecureString $certPwdRaw -AsPlainText -Force
     Export-PfxCertificate -Cert $cert -FilePath $CertPath -Password $pwdSecure | Out-Null
-    # Persist the matching password next to the cert (root-readable only).
     $certPwdRaw | Set-Content -Path (Join-Path $CertDir 'filegen.pwd') -NoNewline -Encoding ASCII
     icacls $CertDir /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
 } else {
-    Write-Host '[4/7] reusing existing cert'
+    Write-Host '[5/7] reusing existing cert'
     $certPwdRaw = (Get-Content (Join-Path $CertDir 'filegen.pwd') -Raw)
 }
 
@@ -130,7 +141,7 @@ if (-not (Test-Path $CertPath)) {
 # -------------------------------------------------------------------
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc) {
-    Write-Host '[5/7] stopping old service...'
+    Write-Host '[6a/7] stopping old service...'
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
     & sc.exe delete $ServiceName | Out-Null
     Start-Sleep -Seconds 2
@@ -142,27 +153,20 @@ if ($svc) {
 $exe = Join-Path $AppDir 'F1.FileGenerator.exe'
 if (-not (Test-Path $exe)) { throw "Published exe not found: $exe" }
 
-Write-Host '[6/7] installing service...'
-# binPath uses LocalSystem so DefaultAzureCredential -> ManagedIdentityCredential
-# resolves the VM's system-assigned identity.
+Write-Host '[6b/7] installing service...'
 & sc.exe create $ServiceName `
     binPath= "`"$exe`"" `
     start= auto `
     obj= LocalSystem `
     DisplayName= 'F1 FileGenerator' | Out-Null
 & sc.exe description $ServiceName 'F1 SRE demo middle-tier API' | Out-Null
-# Recovery: restart on failure with a 30-second delay (reset window 1 day).
 & sc.exe failure $ServiceName reset= 86400 actions= restart/30000/restart/30000/restart/60000 | Out-Null
 
-# Service env vars. SetEnvironmentVariable with Machine target survives reboots
-# AND is inherited by the service when LocalSystem starts it.
 [Environment]::SetEnvironmentVariable('KeyVault__Uri',                $KeyVaultUri, 'Machine')
 [Environment]::SetEnvironmentVariable('Kestrel__CertificatePath',     $CertPath,    'Machine')
 [Environment]::SetEnvironmentVariable('Kestrel__CertificatePassword', $certPwdRaw,  'Machine')
 [Environment]::SetEnvironmentVariable('ASPNETCORE_ENVIRONMENT',       'Production', 'Machine')
 
-# Firewall rule (idempotent; install-vm-deps.ps1 already created it but
-# re-creating is safe).
 New-NetFirewallRule -DisplayName 'FileGenerator 8443' -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
 # -------------------------------------------------------------------
@@ -173,13 +177,11 @@ Start-Service -Name $ServiceName
 
 Start-Sleep -Seconds 8
 $svc = Get-Service -Name $ServiceName
-Write-Host "  service status: $($svc.Status)"
+Write-Host "       service status: $($svc.Status)"
 
-# Smoke test against /health (skips API-key middleware).
 try {
     Add-Type @"
 using System.Net;
-using System.Net.Security;
 public static class TrustAll {
     public static void Init() {
         ServicePointManager.ServerCertificateValidationCallback = (s,c,ch,e) => true;
@@ -188,12 +190,13 @@ public static class TrustAll {
 "@ -ErrorAction SilentlyContinue
     [TrustAll]::Init()
     $r = Invoke-RestMethod -Uri 'https://localhost:8443/health' -TimeoutSec 10
-    Write-Host '  /health response:'
+    Write-Host '       /health response:'
     $r | ConvertTo-Json -Depth 5
 } catch {
-    Write-Warning "  /health probe failed: $($_.Exception.Message)"
-    Write-Host '  service log tail:'
-    Get-ChildItem $LogDir -Filter 'filegen-*.log' | Sort-Object LastWriteTime -Desc | Select-Object -First 1 |
+    Write-Warning "       /health probe failed: $($_.Exception.Message)"
+    Write-Host '       service log tail:'
+    Get-ChildItem $LogDir -Filter 'filegen-*.log' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Desc | Select-Object -First 1 |
         Get-Content -Tail 30
 }
 
