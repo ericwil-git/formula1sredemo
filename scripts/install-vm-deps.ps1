@@ -55,9 +55,90 @@ choco install sqlserver-odbcdriver -y --no-progress
 # Choco installs the engine; we then enable mixed-mode auth, set the sa
 # password, enable TCP on 1433, and start the service.
 # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# SQL Server 2022 Developer Edition — direct download + unattended install.
+# Choco's `--params` quoting is unreliable across pwsh/cmd boundaries (it
+# tokenizes "NT AUTHORITY\NETWORK SERVICE" as separate package names). We
+# download the SQL bootstrapper, fetch the full media, then run setup.exe
+# with a configuration file written to disk.
+# -------------------------------------------------------------------
 if (-not (Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue)) {
     Write-Host 'Installing SQL Server 2022 Developer Edition (this can take 10-15 min)...'
-    choco install sql-server-2022 --params="'/IgnorePendingReboot /SECURITYMODE=SQL /SAPWD=$SqlSaPassword /TCPENABLED=1 /SQLSVCACCOUNT=`"NT AUTHORITY\NETWORK SERVICE`" /SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`" /AGTSVCACCOUNT=`"NT AUTHORITY\NETWORK SERVICE`"'" -y --no-progress
+
+    $sqlBootstrapper = 'D:\f1demo\SQL2022-SSEI-Dev.exe'
+    $sqlMediaDir     = 'D:\f1demo\sqlmedia'
+    $sqlExtractDir   = 'D:\f1demo\sqlextract'
+    $sqlConfigFile   = 'D:\f1demo\sqlconfig.ini'
+
+    if (-not (Test-Path $sqlBootstrapper)) {
+        Write-Host '  downloading SSEI Developer bootstrapper...'
+        Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2215158' `
+            -OutFile $sqlBootstrapper -UseBasicParsing
+    }
+
+    # Download full ISO/box media (no extraction yet)
+    if (-not (Test-Path "$sqlMediaDir\SQLServer2022-x64-ENU-Dev.iso")) {
+        Write-Host '  downloading SQL Server 2022 install media (~1.5 GB)...'
+        New-Item -ItemType Directory -Force -Path $sqlMediaDir | Out-Null
+        $p = Start-Process -FilePath $sqlBootstrapper `
+            -ArgumentList @('/Action=Download', "/MediaPath=$sqlMediaDir", '/MediaType=ISO', '/Quiet') `
+            -Wait -PassThru -NoNewWindow
+        if ($p.ExitCode -ne 0) {
+            throw "SSEI download failed with exit code $($p.ExitCode)"
+        }
+    }
+
+    # Mount the ISO and extract setup.exe + payload
+    if (-not (Test-Path "$sqlExtractDir\setup.exe")) {
+        Write-Host '  mounting ISO + copying media...'
+        $iso = Get-ChildItem "$sqlMediaDir\*.iso" | Select-Object -First 1
+        $mount = Mount-DiskImage -ImagePath $iso.FullName -PassThru
+        Start-Sleep -Seconds 2
+        $vol = (Get-Volume -DiskImage $mount).DriveLetter
+        New-Item -ItemType Directory -Force -Path $sqlExtractDir | Out-Null
+        Copy-Item -Path "${vol}:\*" -Destination $sqlExtractDir -Recurse -Force
+        Dismount-DiskImage -ImagePath $iso.FullName | Out-Null
+    }
+
+    # Build a setup ConfigurationFile.ini — values with spaces are quoted.
+    $configIni = @"
+[OPTIONS]
+ACTION="Install"
+QUIET="True"
+QUIETSIMPLE="False"
+IACCEPTSQLSERVERLICENSETERMS="True"
+ENU="True"
+UpdateEnabled="False"
+SUPPRESSPRIVACYSTATEMENTNOTICE="True"
+FEATURES=SQLENGINE
+INSTANCENAME="MSSQLSERVER"
+INSTANCEID="MSSQLSERVER"
+SQLSVCACCOUNT="NT AUTHORITY\NETWORK SERVICE"
+SQLSVCSTARTUPTYPE="Automatic"
+AGTSVCACCOUNT="NT AUTHORITY\NETWORK SERVICE"
+AGTSVCSTARTUPTYPE="Disabled"
+SECURITYMODE="SQL"
+SAPWD="$SqlSaPassword"
+SQLSYSADMINACCOUNTS="BUILTIN\Administrators"
+TCPENABLED="1"
+NPENABLED="0"
+INSTALLSQLDATADIR="D:\sqldata"
+SQLBACKUPDIR="D:\sqldata\backup"
+SQLUSERDBDIR="D:\sqldata\data"
+SQLUSERDBLOGDIR="D:\sqldata\log"
+SQLTEMPDBDIR="D:\sqldata\tempdb"
+"@
+    New-Item -ItemType Directory -Force -Path 'D:\sqldata\backup','D:\sqldata\data','D:\sqldata\log','D:\sqldata\tempdb' | Out-Null
+    Set-Content -Path $sqlConfigFile -Value $configIni -Encoding ASCII
+
+    Write-Host '  running setup.exe (5-15 min)...'
+    $p = Start-Process -FilePath "$sqlExtractDir\setup.exe" `
+        -ArgumentList @("/ConfigurationFile=$sqlConfigFile", '/IAcceptSQLServerLicenseTerms') `
+        -Wait -PassThru -NoNewWindow
+    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+        throw "SQL Server setup failed with exit code $($p.ExitCode). See C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\Summary.txt"
+    }
+    Write-Host "  setup.exe exit code: $($p.ExitCode) (3010 = success, reboot pending)"
 }
 
 # Ensure mixed-mode auth + sa enabled (idempotent in case the install above
