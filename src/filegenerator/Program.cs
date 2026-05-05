@@ -45,13 +45,25 @@ Log.Logger = new LoggerConfiguration()
 builder.Host.UseSerilog();
 
 // ---------------------------------------------------------------------------
-// Kestrel — listen on :8443 with HTTPS (self-signed in dev, real cert in VM).
+// Kestrel — listen on :8443 with HTTPS. In production (Windows service on the
+// VM) load the PFX from `Kestrel:CertificatePath`. Locally (`dotnet run`) fall
+// back to the ASP.NET dev cert.
 // ---------------------------------------------------------------------------
 builder.WebHost.ConfigureKestrel(options =>
 {
+    var certPath = builder.Configuration["Kestrel:CertificatePath"];
+    var certPassword = builder.Configuration["Kestrel:CertificatePassword"];
+
     options.ListenAnyIP(8443, listen =>
     {
-        listen.UseHttps();
+        if (!string.IsNullOrWhiteSpace(certPath) && File.Exists(certPath))
+        {
+            listen.UseHttps(certPath, certPassword);
+        }
+        else
+        {
+            listen.UseHttps();
+        }
     });
 });
 
