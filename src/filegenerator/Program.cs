@@ -3,12 +3,30 @@
 // Endpoints implement the contract in docs/techspec.md §6.
 // =============================================================================
 
+using Azure.Extensions.AspNetCore.Configuration.Secrets;
+using Azure.Identity;
+using Azure.Security.KeyVault.Secrets;
 using F1.FileGenerator;
 using F1.FileGenerator.Endpoints;
 using Prometheus;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ---------------------------------------------------------------------------
+// Key Vault config provider (optional). When KeyVault:Uri is set, the VM's
+// managed identity reads two secrets and aliases them to the FileGenerator
+// config shape:
+//   fileGeneratorApiKey -> FileGenerator:ApiKey
+//   sqlConnectionString -> FileGenerator:SqlConnectionString
+// ---------------------------------------------------------------------------
+var kvUri = builder.Configuration["KeyVault:Uri"];
+if (!string.IsNullOrWhiteSpace(kvUri))
+{
+    builder.Configuration.AddAzureKeyVault(
+        new SecretClient(new Uri(kvUri), new DefaultAzureCredential()),
+        new F1KvSecretManager());
+}
 
 // ---------------------------------------------------------------------------
 // Logging — structured JSON to console + rolling file picked up by AMA.
@@ -98,6 +116,25 @@ namespace F1.FileGenerator
 {
     public sealed record ApiKeyOptions(string Value);
 
+    /// <summary>
+    /// Maps Key Vault secret names to the .NET configuration shape this app
+    /// expects. KV secret names are flat (no colons), and they're stored as
+    /// camelCase by Bicep, so we explicitly translate the two we care about.
+    /// Any other secret in the vault is ignored to avoid surprise surface area.
+    /// </summary>
+    public sealed class F1KvSecretManager : Azure.Extensions.AspNetCore.Configuration.Secrets.KeyVaultSecretManager
+    {
+        public override bool Load(Azure.Security.KeyVault.Secrets.SecretProperties secret)
+            => secret.Name is "fileGeneratorApiKey" or "sqlConnectionString";
+
+        public override string GetKey(Azure.Security.KeyVault.Secrets.KeyVaultSecret secret) => secret.Name switch
+        {
+            "fileGeneratorApiKey" => "FileGenerator:ApiKey",
+            "sqlConnectionString" => "FileGenerator:SqlConnectionString",
+            _ => secret.Name
+        };
+    }
+
     public interface ISqlConnectionFactory
     {
         Microsoft.Data.SqlClient.SqlConnection Create();
@@ -106,10 +143,15 @@ namespace F1.FileGenerator
     public sealed class SqlConnectionFactory : ISqlConnectionFactory
     {
         private readonly string _connectionString;
-        public SqlConnectionFactory(IConfiguration cfg)
+        public SqlConnectionFactory(IConfiguration cfg, ILogger<SqlConnectionFactory> log)
         {
             _connectionString = cfg["FileGenerator:SqlConnectionString"]
-                ?? "Server=localhost;Database=f1demo;Integrated Security=true;TrustServerCertificate=true;";
+                ?? "Server=localhost,1433;Database=f1demo;Integrated Security=true;TrustServerCertificate=true;";
+            // Log a sanitized form so we can confirm config without leaking the password.
+            var b = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(_connectionString);
+            log.LogInformation("SQL target: {server}/{db} (auth={auth})",
+                b.DataSource, b.InitialCatalog,
+                string.IsNullOrEmpty(b.UserID) ? "Integrated" : $"User={b.UserID}");
         }
 
         public Microsoft.Data.SqlClient.SqlConnection Create()
@@ -125,6 +167,7 @@ namespace F1.FileGenerator
 
     public sealed class DiskFileCache : IFileCache
     {
+        private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
         public string CacheDirectory { get; }
         public DiskFileCache(IConfiguration cfg)
         {
@@ -134,14 +177,21 @@ namespace F1.FileGenerator
 
         public bool TryGetCachedPath(string key, out string path)
         {
-            // TODO(spec §5.2): implement keyed cache lookup with expiry.
             path = Path.Combine(CacheDirectory, key);
-            return File.Exists(path);
+            if (!File.Exists(path)) return false;
+            var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
+            return age < CacheTtl;
         }
 
         public async Task WriteAsync(string key, string extension, Stream content, CancellationToken ct)
         {
-            var path = Path.Combine(CacheDirectory, $"{key}.{extension}");
+            // Cache key already includes the extension (e.g. "race-2024-8.csv").
+            // Honor that and only append if missing, so reads + writes use the
+            // same path.
+            var fileName = key.EndsWith($".{extension}", StringComparison.OrdinalIgnoreCase)
+                ? key
+                : $"{key}.{extension}";
+            var path = Path.Combine(CacheDirectory, fileName);
             await using var fs = File.Create(path);
             await content.CopyToAsync(fs, ct);
         }

@@ -15,11 +15,14 @@ public static class HealthEndpoints
             {
                 await using var conn = db.Create();
                 await conn.OpenAsync();
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT 1";
+                _ = await cmd.ExecuteScalarAsync();
                 sqlStatus = "reachable";
             }
             catch (Exception ex)
             {
-                sqlStatus = $"unreachable: {ex.GetType().Name}";
+                sqlStatus = $"unreachable: {ex.GetType().Name}: {ex.Message}";
             }
 
             long sizeBytes = 0;
