@@ -2,8 +2,7 @@
 @namespace F1.Web.Pages
 @inject FileGeneratorClient FileGen
 
-<h1>Season browser</h1>
-<p>Pick a year to see the calendar of events.</p>
+<h1>@year season</h1>
 
 <form @onsubmit="Load">
     <label>Year:
@@ -12,24 +11,56 @@
     <button type="submit">Load</button>
 </form>
 
-@if (csv is not null)
+@if (loading)
 {
-    <h2>@year season</h2>
-    <pre>@csv</pre>
-    <!-- TODO(spec §7): parse CSV into a sortable table; link each row to /race/{year}/{round}. -->
+    <p><em>Loading…</em></p>
+}
+else if (table is null || table.Rows.Count == 0)
+{
+    <p>No events for @year. The database may be empty — run the ingestion service.</p>
+    @if (raw is not null)
+    {
+        <details>
+            <summary>raw response</summary>
+            <pre>@raw</pre>
+        </details>
+    }
+}
+else
+{
+    <table>
+        <thead><tr>
+            @foreach (var h in table.Headers) { <th>@h</th> }
+            <th></th>
+        </tr></thead>
+        <tbody>
+        @foreach (var row in table.Rows)
+        {
+            <tr>
+                @foreach (var c in row) { <td>@c</td> }
+                <td>
+                    <a href="@($"/race/{year}/{row[CsvTable.IndexOf(table.Headers, "Round")]}")">race</a>
+                    | <a href="@($"/qualifying/{year}/{row[CsvTable.IndexOf(table.Headers, "Round")]}")">quali</a>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
 }
 
 @code {
     private int year = 2024;
-    private string? csv;
+    private string? raw;
+    private CsvTable.Table? table;
+    private bool loading;
 
-    protected override async Task OnInitializedAsync()
-    {
-        await Load();
-    }
+    protected override async Task OnInitializedAsync() => await Load();
 
     private async Task Load()
     {
-        csv = await FileGen.GetSeasonCsvAsync(year);
+        loading = true;
+        raw = await FileGen.GetSeasonCsvAsync(year);
+        table = CsvTable.Parse(raw);
+        loading = false;
     }
 }

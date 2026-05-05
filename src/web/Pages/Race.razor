@@ -1,27 +1,97 @@
 @page "/race/{Year:int}/{Round:int}"
 @namespace F1.Web.Pages
 @inject FileGeneratorClient FileGen
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <h1>Race results — @Year round @Round</h1>
 
-@if (csv is null)
+@if (table is null)
 {
-    <p>Loading…</p>
+    <p><em>Loading…</em></p>
+}
+else if (table.Rows.Count == 0)
+{
+    <p>No race data available. The database may be empty.</p>
 }
 else
 {
-    <pre>@csv</pre>
-    <!-- TODO(spec §7): render lap-by-lap table + Chart.js position-by-lap chart. -->
+    <p><strong>@table.Rows.Count</strong> lap-rows across <strong>@DriverCount</strong> drivers.</p>
+
+    <h2>Position by lap</h2>
+    <canvas id="positionChart" height="120"></canvas>
+
+    <h2>Lap-by-lap data</h2>
+    <table>
+        <thead><tr>@foreach (var h in table.Headers) { <th>@h</th> }</tr></thead>
+        <tbody>
+            @foreach (var row in table.Rows.Take(200))
+            {
+                <tr>@foreach (var c in row) { <td>@c</td> }</tr>
+            }
+        </tbody>
+    </table>
+    @if (table.Rows.Count > 200)
+    {
+        <p><em>(showing first 200 of @table.Rows.Count rows)</em></p>
+    }
 }
 
 @code {
     [Parameter] public int Year { get; set; }
     [Parameter] public int Round { get; set; }
 
-    private string? csv;
+    private CsvTable.Table? table;
+    private int DriverCount;
+    private bool _chartRendered;
 
     protected override async Task OnParametersSetAsync()
     {
-        csv = await FileGen.GetRaceCsvAsync(Year, Round);
+        var raw = await FileGen.GetRaceCsvAsync(Year, Round);
+        table = CsvTable.Parse(raw);
+        DriverCount = table.Rows
+            .Select(r => r[CsvTable.IndexOf(table.Headers, "Driver")])
+            .Distinct().Count();
+        _chartRendered = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (table is null || table.Rows.Count == 0 || _chartRendered) return;
+
+        var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
+        var lapIdx    = CsvTable.IndexOf(table.Headers, "LapNumber");
+        var posIdx    = CsvTable.IndexOf(table.Headers, "Position");
+        if (driverIdx < 0 || lapIdx < 0 || posIdx < 0) return;
+
+        var byDriver = table.Rows.GroupBy(r => r[driverIdx]);
+        var palette = new[] {
+            "#f78166","#58a6ff","#3fb950","#d29922","#a371f7",
+            "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff"
+        };
+        var idx = 0;
+        var datasets = new List<object>();
+        foreach (var g in byDriver)
+        {
+            var pts = g.Where(r => int.TryParse(r[lapIdx], out _) && int.TryParse(r[posIdx], out _))
+                       .Select(r => new { x = int.Parse(r[lapIdx]), y = int.Parse(r[posIdx]) })
+                       .OrderBy(p => p.x).ToArray();
+            if (pts.Length == 0) continue;
+            datasets.Add(new {
+                label = g.Key,
+                points = pts,
+                color = palette[idx++ % palette.Length]
+            });
+        }
+
+        await JS.InvokeVoidAsync("f1Charts.renderLineChart",
+            "positionChart", $"{Year} round {Round}", datasets, "Lap");
+        _chartRendered = true;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("f1Charts.destroy", "positionChart"); }
+        catch { /* circuit may be disposed */ }
     }
 }

@@ -1,24 +1,36 @@
 @page "/lap-explorer"
 @namespace F1.Web.Pages
+@using System.Text.Json
 @inject FileGeneratorClient FileGen
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <h1>Lap explorer</h1>
-<p>Pick a session and lap to see telemetry.</p>
 
 <form @onsubmit="Load">
-    <label>Year: <input type="number" @bind="year" /></label>
-    <label>Round: <input type="number" @bind="round" /></label>
-    <label>Session: <input type="text" @bind="session" /></label>
-    <label>Driver: <input type="text" @bind="driver" /></label>
-    <label>Lap: <input type="number" @bind="lap" /></label>
+    <label>Year:    <input type="number" @bind="year" /></label>
+    <label>Round:   <input type="number" @bind="round" /></label>
+    <label>Session: <input type="text"   @bind="session" /></label>
+    <label>Driver:  <input type="text"   @bind="driver" /></label>
+    <label>Lap:     <input type="number" @bind="lap" /></label>
     <button type="submit">Load</button>
 </form>
 
-@if (json is not null)
+@if (loading)
 {
-    <h2>Telemetry — @driver lap @lap</h2>
-    <pre>@json</pre>
-    <!-- TODO(spec §7): bind JSON samples to a Chart.js multi-axis chart (speed, throttle, brake, gear). -->
+    <p><em>Loading…</em></p>
+}
+else if (sampleCount == 0)
+{
+    <p>No telemetry samples returned. Was telemetry enabled during ingestion?</p>
+}
+else
+{
+    <p><strong>@sampleCount</strong> samples for @driver lap @lap.</p>
+    <h2>Speed (km/h)</h2>
+    <canvas id="speedChart" height="120"></canvas>
+    <h2>Throttle / Brake / Gear</h2>
+    <canvas id="ctrlChart" height="120"></canvas>
 }
 
 @code {
@@ -27,15 +39,71 @@
     private string session = "R";
     private string driver = "VER";
     private int lap = 42;
-    private string? json;
 
-    protected override async Task OnInitializedAsync()
-    {
-        await Load();
-    }
+    private bool loading;
+    private int sampleCount;
+    private List<object>? speedDs;
+    private List<object>? ctrlDs;
+
+    protected override async Task OnInitializedAsync() => await Load();
 
     private async Task Load()
     {
-        json = await FileGen.GetLapDetailJsonAsync(year, round, session, driver, lap);
+        loading = true;
+        sampleCount = 0;
+        speedDs = ctrlDs = null;
+        var json = await FileGen.GetLapDetailJsonAsync(year, round, session, driver, lap);
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("samples", out var arr))
+            {
+                var speeds = new List<object>();
+                var throttles = new List<object>();
+                var brakes = new List<object>();
+                var gears = new List<object>();
+                foreach (var s in arr.EnumerateArray())
+                {
+                    var t = s.GetProperty("SampleTimeMs").GetInt32();
+                    speeds.Add(new { x = t, y = s.TryGetProperty("SpeedKph", out var sp) ? sp.GetInt32() : 0 });
+                    throttles.Add(new { x = t, y = s.TryGetProperty("Throttle", out var th) ? th.GetInt32() : 0 });
+                    brakes.Add(new { x = t, y = s.TryGetProperty("Brake", out var br) && br.GetInt32() == 1 ? 100 : 0 });
+                    gears.Add(new { x = t, y = (s.TryGetProperty("Gear", out var g) ? g.GetInt32() : 0) * 12 });
+                }
+                sampleCount = speeds.Count;
+                speedDs = new List<object> {
+                    new { label = "Speed (km/h)", points = speeds, color = "#58a6ff" }
+                };
+                ctrlDs = new List<object> {
+                    new { label = "Throttle %",   points = throttles, color = "#3fb950" },
+                    new { label = "Brake (×100)", points = brakes,    color = "#f78166" },
+                    new { label = "Gear (×12)",   points = gears,     color = "#d29922" },
+                };
+            }
+        }
+        catch
+        {
+            sampleCount = 0;
+        }
+        loading = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (sampleCount == 0 || speedDs is null || ctrlDs is null) return;
+        await JS.InvokeVoidAsync("f1Charts.renderLineChart",
+            "speedChart", $"{driver} lap {lap}", speedDs, "Time (ms)");
+        await JS.InvokeVoidAsync("f1Charts.renderLineChart",
+            "ctrlChart", $"{driver} lap {lap} controls", ctrlDs, "Time (ms)");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("f1Charts.destroy", "speedChart");
+            await JS.InvokeVoidAsync("f1Charts.destroy", "ctrlChart");
+        }
+        catch { }
     }
 }

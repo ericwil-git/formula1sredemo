@@ -1,27 +1,74 @@
 @page "/qualifying/{Year:int}/{Round:int}"
 @namespace F1.Web.Pages
 @inject FileGeneratorClient FileGen
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <h1>Qualifying — @Year round @Round</h1>
 
-@if (csv is null)
+@if (table is null)
 {
-    <p>Loading…</p>
+    <p><em>Loading…</em></p>
+}
+else if (table.Rows.Count == 0)
+{
+    <p>No qualifying data.</p>
 }
 else
 {
-    <pre>@csv</pre>
-    <!-- TODO(spec §7): render Q1/Q2/Q3 grid + delta-to-pole bar chart. -->
+    <h2>Delta to pole (ms)</h2>
+    <canvas id="qualiChart" height="120"></canvas>
+
+    <h2>Q1 / Q2 / Q3</h2>
+    <table>
+        <thead><tr>@foreach (var h in table.Headers) { <th>@h</th> }</tr></thead>
+        <tbody>
+            @foreach (var row in table.Rows)
+            {
+                <tr>@foreach (var c in row) { <td>@c</td> }</tr>
+            }
+        </tbody>
+    </table>
 }
 
 @code {
     [Parameter] public int Year { get; set; }
     [Parameter] public int Round { get; set; }
 
-    private string? csv;
+    private CsvTable.Table? table;
+    private bool _chartRendered;
 
     protected override async Task OnParametersSetAsync()
     {
-        csv = await FileGen.GetQualifyingCsvAsync(Year, Round);
+        var raw = await FileGen.GetQualifyingCsvAsync(Year, Round);
+        table = CsvTable.Parse(raw);
+        _chartRendered = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (table is null || table.Rows.Count == 0 || _chartRendered) return;
+        var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
+        var deltaIdx  = CsvTable.IndexOf(table.Headers, "DeltaToPoleMs");
+        if (driverIdx < 0 || deltaIdx < 0) return;
+
+        var labels = new List<string>();
+        var values = new List<double>();
+        foreach (var row in table.Rows)
+        {
+            if (!double.TryParse(row[deltaIdx], out var v)) continue;
+            labels.Add(row[driverIdx]);
+            values.Add(v);
+        }
+
+        await JS.InvokeVoidAsync("f1Charts.renderBarChart",
+            "qualiChart", "Delta to pole (ms)", labels, values, "#f78166");
+        _chartRendered = true;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("f1Charts.destroy", "qualiChart"); }
+        catch { }
     }
 }

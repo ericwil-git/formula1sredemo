@@ -1,24 +1,31 @@
 @page "/compare"
 @namespace F1.Web.Pages
 @inject FileGeneratorClient FileGen
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <h1>Driver compare</h1>
-<p>Overlay two drivers' lap times across a race.</p>
 
 <form @onsubmit="Load">
-    <label>Year: <input type="number" @bind="year" /></label>
-    <label>Round: <input type="number" @bind="round" /></label>
-    <label>Driver A: <input type="text" @bind="driverA" /></label>
-    <label>Driver B: <input type="text" @bind="driverB" /></label>
+    <label>Year:    <input type="number" @bind="year" /></label>
+    <label>Round:   <input type="number" @bind="round" /></label>
+    <label>Driver A:<input type="text"   @bind="driverA" /></label>
+    <label>Driver B:<input type="text"   @bind="driverB" /></label>
     <button type="submit">Compare</button>
 </form>
 
-@if (csv is not null)
+@if (loading)
 {
-    <h2>@driverA vs @driverB — @year round @round</h2>
-    <pre>@csv</pre>
-    <!-- TODO(spec §7): filter the race CSV to the two drivers; render an overlay
-         line chart of LapTimeMs vs LapNumber with sector deltas highlighted. -->
+    <p><em>Loading…</em></p>
+}
+else if (table is null || table.Rows.Count == 0)
+{
+    <p>No race data.</p>
+}
+else
+{
+    <h2>Lap times — @driverA vs @driverB</h2>
+    <canvas id="compareChart" height="120"></canvas>
 }
 
 @code {
@@ -26,15 +33,58 @@
     private int round = 8;
     private string driverA = "VER";
     private string driverB = "LEC";
-    private string? csv;
+    private CsvTable.Table? table;
+    private bool loading;
+    private List<object>? datasets;
 
-    protected override async Task OnInitializedAsync()
-    {
-        await Load();
-    }
+    protected override async Task OnInitializedAsync() => await Load();
 
     private async Task Load()
     {
-        csv = await FileGen.GetRaceCsvAsync(year, round);
+        loading = true;
+        var raw = await FileGen.GetRaceCsvAsync(year, round);
+        table = CsvTable.Parse(raw);
+        datasets = null;
+        if (table.Rows.Count > 0)
+        {
+            var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
+            var lapIdx    = CsvTable.IndexOf(table.Headers, "LapNumber");
+            var lapMsIdx  = CsvTable.IndexOf(table.Headers, "LapTimeMs");
+            if (driverIdx >= 0 && lapIdx >= 0 && lapMsIdx >= 0)
+            {
+                datasets = new List<object>();
+                AddDriver(driverIdx, lapIdx, lapMsIdx, driverA, "#58a6ff");
+                AddDriver(driverIdx, lapIdx, lapMsIdx, driverB, "#f78166");
+            }
+        }
+        loading = false;
+    }
+
+    private void AddDriver(int driverIdx, int lapIdx, int lapMsIdx, string code, string color)
+    {
+        if (table is null) return;
+        var pts = table.Rows
+            .Where(r => string.Equals(r[driverIdx], code, StringComparison.OrdinalIgnoreCase))
+            .Where(r => int.TryParse(r[lapIdx], out _) && int.TryParse(r[lapMsIdx], out var ms) && ms > 0)
+            .Select(r => new { x = int.Parse(r[lapIdx]), y = int.Parse(r[lapMsIdx]) })
+            .OrderBy(p => p.x)
+            .ToArray();
+        if (pts.Length > 0)
+        {
+            datasets!.Add(new { label = code, points = pts, color = color });
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (datasets is null || datasets.Count == 0) return;
+        await JS.InvokeVoidAsync("f1Charts.renderLineChart",
+            "compareChart", $"{driverA} vs {driverB} lap times", datasets, "Lap");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("f1Charts.destroy", "compareChart"); }
+        catch { }
     }
 }
