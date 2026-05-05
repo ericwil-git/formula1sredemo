@@ -15,9 +15,9 @@ param keyVaultName string
 @description('Resource tags.')
 param tags object
 
-@description('SQL MI admin password — stored as a secret.')
+@description('SQL Server sa password — stored as a secret. Used by FileGenerator + Ingestion on the VM.')
 @secure()
-param sqlMiAdminPassword string
+param sqlServerSaPassword string
 
 @description('FileGenerator API key — stored as a secret.')
 @secure()
@@ -62,9 +62,9 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
 
 resource secretSqlAdmin 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: kv
-  name: 'sqlMiAdminPassword'
+  name: 'sqlServerSaPassword'
   properties: {
-    value: sqlMiAdminPassword
+    value: sqlServerSaPassword
     contentType: 'text/plain'
   }
 }

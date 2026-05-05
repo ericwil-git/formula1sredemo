@@ -1,6 +1,12 @@
 // =============================================================================
 // F1 SRE Demo — subscription-scope entry point.
 // Creates the resource group and invokes all child modules.
+//
+// NOTE: Data tier was changed from Azure SQL Managed Instance to
+// SQL Server 2022 Developer Edition installed on the same Windows Server VM
+// that runs FileGenerator + Ingestion. See docs/techspec.md §3.1.
+// MCAPS deny policy on SQL MI (AAD-only auth, can't be disabled in this
+// subscription) made SQL MI unworkable for the demo.
 // =============================================================================
 
 targetScope = 'subscription'
@@ -19,22 +25,9 @@ param namePrefix string = 'f1demo'
 @description('Suffix used to make globally-unique names (KV, App Service). Default: short hash of subscription+RG.')
 param uniqueSuffix string = substring(uniqueString(subscription().subscriptionId, resourceGroupName), 0, 6)
 
-@description('SQL MI admin login (legacy field; SQL auth is disabled at runtime).')
-param sqlMiAdminLogin string = 'f1adm'
-
-@description('SQL MI admin password (legacy field; SQL auth is disabled at runtime, but ARM still requires a value).')
+@description('SQL Server sa password (used by FileGenerator + Ingestion to connect to localhost SQL Server on the VM).')
 @secure()
-param sqlMiAdminPassword string
-
-@description('Display name (UPN or group name) of the Entra ID SQL MI admin.')
-param aadAdminLogin string
-
-@description('Object ID of the Entra ID user/group that will be SQL MI admin.')
-param aadAdminObjectId string
-
-@description('Principal type of the AAD admin: User, Group, or Application.')
-@allowed(['User', 'Group', 'Application'])
-param aadAdminPrincipalType string = 'User'
+param sqlServerSaPassword string
 
 @description('Windows VM local admin username.')
 param vmAdminUsername string = 'f1demoadmin'
@@ -88,23 +81,6 @@ module network 'modules/network.bicep' = {
   }
 }
 
-module sqlmi 'modules/sqlmi.bicep' = {
-  scope: rg
-  name: 'sqlmi'
-  params: {
-    location: location
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-    tags: tags
-    sqlMiSubnetId: network.outputs.sqlMiSubnetId
-    administratorLogin: sqlMiAdminLogin
-    administratorLoginPassword: sqlMiAdminPassword
-    aadAdminLogin: aadAdminLogin
-    aadAdminObjectId: aadAdminObjectId
-    aadAdminPrincipalType: aadAdminPrincipalType
-  }
-}
-
 module vm 'modules/vm.bicep' = {
   scope: rg
   name: 'vm'
@@ -141,9 +117,11 @@ module keyvault 'modules/keyvault.bicep' = {
     location: location
     keyVaultName: kvName
     tags: tags
-    sqlMiAdminPassword: sqlMiAdminPassword
+    sqlServerSaPassword: sqlServerSaPassword
     fileGeneratorApiKey: fileGeneratorApiKey
-    sqlConnectionString: 'Server=${sqlmi.outputs.fullyQualifiedDomainName};Database=f1demo;Authentication=Active Directory Default;TrustServerCertificate=True;'
+    // FileGenerator + Ingestion both run on the VM and connect to the
+    // local SQL Server install. Hostname is localhost; sa auth.
+    sqlConnectionString: 'Server=localhost,1433;Database=f1demo;User Id=sa;Password=${sqlServerSaPassword};Encrypt=True;TrustServerCertificate=True;'
     appServicePrincipalId: appservice.outputs.principalId
     vmPrincipalId: vm.outputs.principalId
   }
@@ -154,7 +132,6 @@ output webAppDefaultHostName string = appservice.outputs.defaultHostName
 output webAppName string = webAppName
 output vmName string = vm.outputs.vmName
 output vmPrivateIp string = vm.outputs.privateIp
-output sqlMiFqdn string = sqlmi.outputs.fullyQualifiedDomainName
 output keyVaultName string = kvName
 output logAnalyticsWorkspaceId string = monitoring.outputs.logAnalyticsWorkspaceId
 output azureMonitorWorkspaceId string = monitoring.outputs.azureMonitorWorkspaceId

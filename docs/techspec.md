@@ -11,7 +11,7 @@
 ## 1. Goals & Non-Goals
 
 ### Goals
-- Demonstrate a realistic enterprise three-tier pattern: cloud-native web tier consuming data produced by a Windows Server (IaaS) middle tier backed by Azure SQL Managed Instance.
+- Demonstrate a realistic enterprise three-tier pattern: cloud-native web tier consuming data produced by a Windows Server (IaaS) middle tier backed by SQL Server installed on the same VM. (Originally specified as Azure SQL Managed Instance — see §3.1 for why this changed.)
 - Use real, recognizable Formula 1 data (sessions, laps, drivers, **telemetry**) sourced from the open-source [FastF1](https://docs.fastf1.dev/api_reference/index.html) library.
 - Showcase first-class observability: Azure Monitor Agent on the VM, Azure Monitor Workspace for managed Prometheus metrics, and the Observability Agent for end-to-end SRE storytelling.
 - Deployable end-to-end via Bicep + GitHub Actions in under 30 minutes; tear-down friendly (no auto-shutdown — operator stops resources between demos).
@@ -41,7 +41,8 @@
          |                                                       | T-SQL (private endpoint)
          |                                                       v
          |                                         +-----------------------------+
-         |                                         |  Azure SQL Managed Instance |
+         |                                         |  SQL Server 2022 Dev Ed.    |
+         |                                         |  (on the same VM, port 1433)|
          |                                         |  General Purpose, 4 vCore   |
          |                                         +-------------+---------------+
          |                                                       |
@@ -55,27 +56,50 @@
 
 ### 2.2 Networking
 - One VNet (`vnet-f1demo-cus`) with three subnets:
-  - `snet-sqlmi` — delegated to `Microsoft.Sql/managedInstances`
-  - `snet-app`   — Windows Server VM
-  - `snet-pe`    — private endpoints (App Service → VM, App Service → Key Vault)
+  - `snet-app`   — Windows Server VM (also hosts SQL Server)
+  - `snet-pe`    — private endpoints (App Service → Key Vault)
+  - `snet-appsvc-int` — App Service VNet integration
 - App Service uses regional VNet integration to call the VM over its private IP.
-- SQL MI is private-endpoint-only; no public endpoint enabled.
-- Private DNS zones for `privatelink.database.windows.net` and `privatelink.azurewebsites.net`.
+- SQL Server is bound to the VM's private NIC and only reachable from inside
+  the VNet via NSG rule on `snet-app:1433`. FileGenerator and Ingestion
+  connect to `localhost,1433` from on-box, so the VNet path is unused at
+  runtime but available for ad-hoc admin from another VNet-attached host.
+- Private DNS zones for `privatelink.vaultcore.azure.net` and `privatelink.azurewebsites.net`.
 
 ### 2.3 Identity
 - System-assigned managed identities on App Service and Windows Server VM.
-- SQL MI: Microsoft Entra ID auth where possible; SQL auth fallback for Python `pyodbc` ingestion path.
-- Secrets (SQL connection string, FileGenerator API key, FastF1 cache path) in Key Vault; consumed via managed identity.
+- SQL Server: SQL authentication (mixed mode), `sa` account; password stored
+  in Key Vault and read by FileGenerator/Ingestion at startup.
+- Secrets (SQL `sa` password, FileGenerator API key, FastF1 cache path) in
+  Key Vault; consumed via managed identity.
 
 ---
 
 ## 3. Components
 
-### 3.1 Azure SQL Managed Instance
-- **Tier:** General Purpose, 4 vCore, 32 GB storage (smallest viable for demo cost).
-- **Collation:** `SQL_Latin1_General_CP1_CI_AS`.
-- **Backup:** locally redundant, default retention.
-- **Diagnostic settings:** `SQLSecurityAuditEvents`, `Errors`, `ResourceUsageStats` → Log Analytics.
+### 3.1 SQL Server 2022 Developer Edition (on the VM)
+
+> **Design change v0.3 (2026-05):** the data tier was originally specified as
+> Azure SQL Managed Instance. The MCAPS subscription enforces an
+> AAD-only-authentication deny policy on SQL MI that cannot be disabled (even
+> with `SecurityControl=Ignore`), and the SQL MI MI cannot be granted
+> Directory Readers in this tenant without a Privileged Role Administrator —
+> blocking `CREATE USER ... FROM EXTERNAL PROVIDER` for the VM/App Service
+> identities. SQL Server installed locally on the VM is fully under our
+> control, free under the Developer SKU, and tells the same on-prem-style
+> story for an SRE demo.
+
+- **Edition:** SQL Server 2022 Developer Edition (free, full-featured, not for production).
+- **Install host:** the Windows Server VM (`vm-f1demo-win`).
+- **Auth mode:** mixed (SQL + Windows). FileGenerator and Ingestion both run on the
+  VM and connect via `Server=localhost,1433` with the `sa` account; the password
+  lives in Key Vault as `sqlServerSaPassword` and is read at service startup.
+- **Storage:** data + log files on the `D:\sqldata` directory of the VM's data disk.
+- **Collation:** `SQL_Latin1_General_CP1_CI_AS` (database-level, set when `db/schema.sql` runs).
+- **Backup:** native SQL Server backup to `D:\sqldata\backup` (out of scope for v1).
+- **Diagnostic data:** SQL Server error log + AMA-collected Windows Event Log →
+  Log Analytics. The `windows_exporter` MSSQL collector exposes per-database
+  metrics on `:9182/metrics` (scraped by Azure Monitor managed Prometheus).
 
 ### 3.2 Windows Server VM
 - **OS:** Windows Server 2022 Datacenter Azure Edition.
@@ -90,7 +114,7 @@
 - **Two services run on the VM:**
 
 #### `F1.IngestionService` (Python)
-- Pulls historical F1 sessions from FastF1; populates SQL MI.
+- Pulls historical F1 sessions from FastF1; populates the local SQL Server.
 - Triggered manually (`run-ingest.ps1 --year 2024 --events all --telemetry true`) and on a daily Scheduled Task for incremental loads.
 - Caches FastF1 raw data to `D:\fastf1-cache\` to respect FastF1 rate limits across re-runs.
 - Bulk insert via `pyodbc` `fast_executemany=True`; telemetry rows batched at 10 000.
@@ -98,7 +122,7 @@
 
 #### `F1.FileGenerator` (.NET 8 Minimal API)
 - Listens on `https://0.0.0.0:8443` with self-signed cert (trusted via App Service `WEBSITE_LOAD_ROOT_CERTIFICATES`).
-- Queries SQL MI on demand; materializes CSV or JSON; caches to `D:\f1-files\` (key = querystring hash).
+- Queries the local SQL Server on demand; materializes CSV or JSON; caches to `D:\f1-files\` (key = querystring hash).
 - Adds `prometheus-net` middleware for HTTP request metrics, plus custom counters `f1_files_generated_total{endpoint=...,format=...}`.
 - Logs structured JSON to `D:\f1-files\logs\filegen-YYYYMMDD.log`, picked up by AMA.
 
@@ -115,12 +139,12 @@
   - VM `windows_exporter` on `:9182`
   - `F1.FileGenerator` `/metrics` on `:8443`
   - `F1.IngestionService` pushgateway (or textfile collector via windows_exporter)
-- **Azure Managed Grafana** (optional, recommended) — dashboards for ingestion throughput, file generation latency, SQL MI DTU/CPU, lap-data freshness.
+- **Azure Managed Grafana** (optional, recommended) — dashboards for ingestion throughput, file generation latency, SQL Server CPU/IO, lap-data freshness.
 - **Observability Agent** — connected to the workspace; used live during the demo to answer SRE-style questions ("why did the last ingestion take 12 minutes?", "are there errors in the FileGenerator logs in the last hour?").
 
 ---
 
-## 4. Data Model (SQL MI)
+## 4. Data Model (SQL Server `f1demo`)
 
 ```sql
 Seasons        (SeasonId PK, Year, Name)
@@ -144,7 +168,7 @@ RaceResults    (SessionId FK, DriverId FK, Position, GridPosition, Status,
 - `IX_Telemetry_Lap_Time` on `Telemetry(LapId, SampleTimeMs)`
 - `IX_Sessions_Event_Type` on `Sessions(EventId, SessionType)`
 
-**Volume estimate (full 2024 season, telemetry on):** ~24 events × ~5 sessions × ~20 drivers × ~60 laps × ~200 telemetry samples ≈ 28M telemetry rows. Comfortable on 32 GB SQL MI GP.
+**Volume estimate (full 2024 season, telemetry on):** ~24 events × ~5 sessions × ~20 drivers × ~60 laps × ~200 telemetry samples ≈ 28M telemetry rows. Comfortable on the VM's 128 GB Premium SSD data disk.
 
 ---
 
@@ -154,14 +178,14 @@ RaceResults    (SessionId FK, DriverId FK, Position, GridPosition, Status,
 1. Operator runs `D:\f1demo\run-ingest.ps1 --year 2024 --events all`.
 2. `F1.IngestionService` iterates events, loads each session via FastF1.
 3. FastF1 caches to `D:\fastf1-cache\`.
-4. Service transforms FastF1 dataframes → bulk inserts into SQL MI.
+4. Service transforms FastF1 dataframes → bulk inserts into SQL Server.
 5. Telemetry inserted in 10 000-row batches; each batch wrapped in a transaction.
 6. Prometheus counters incremented; success/failure logged for AMA pickup.
 
 ### 5.2 Read Path (per user request)
 1. User opens `https://<app>.azurewebsites.net/race/2024/8` (Monaco).
 2. App Service Blazor component calls `https://winsrv.internal:8443/files/race?year=2024&round=8&format=csv` with `X-Api-Key`.
-3. FileGenerator checks `D:\f1-files\` cache; if miss, queries SQL MI and writes CSV.
+3. FileGenerator checks `D:\f1-files\` cache; if miss, queries the local SQL Server and writes CSV.
 4. CSV streamed back to App Service; parsed; Chart.js renders the table and charts.
 5. Telemetry overlay view (`/lap-detail`) calls a separate JSON endpoint and plots speed/throttle/brake/gear.
 
@@ -176,7 +200,7 @@ sequenceDiagram
     participant FG as F1.FileGenerator
     participant ING as F1.IngestionService
     participant FF1 as FastF1 (public)
-    participant SQL as Azure SQL MI
+    participant SQL as SQL Server (on VM)
     participant AMW as Azure Monitor Workspace
     participant LAW as Log Analytics
     participant OBS as Observability Agent
@@ -231,10 +255,10 @@ All endpoints require header `X-Api-Key: <key>`. All return `Content-Type` match
 | GET    | `/files/qualifying`   | `year`, `round`, `format`                         | Q1/Q2/Q3 times per driver with delta-to-pole. |
 | GET    | `/files/lap-detail`   | `year`, `round`, `session`, `driver`, `lap`, `format` | Per-sample telemetry for one lap. |
 | GET    | `/files/season`       | `year`, `format`                                  | Event calendar with rounds, dates, locations. |
-| GET    | `/health`             | —                                                | `{"status":"ok","sqlMi":"reachable","cacheSizeMb":N}` |
+| GET    | `/health`             | —                                                | `{"status":"ok","sqlServer":"reachable","cacheSizeMb":N}` |
 | GET    | `/metrics`            | —                                                | Prometheus exposition (no API key required from VNet). |
 
-**Error model:** RFC 7807 problem+json. `404` for unknown race, `502` for SQL MI unreachable, `401` for bad API key.
+**Error model:** RFC 7807 problem+json. `404` for unknown race, `502` for SQL Server unreachable, `401` for bad API key.
 
 ---
 
@@ -245,7 +269,7 @@ All endpoints require header `X-Api-Key: <key>`. All return `Content-Type` match
 3. **Qualifying breakdown** — Q1/Q2/Q3 grid with delta-to-pole bar chart.
 4. **Lap explorer** — pick driver + lap → speed, throttle, brake, gear traces over distance/time.
 5. **Driver compare** — overlay two drivers' lap times across a race; highlight sector-by-sector deltas.
-6. **Ops dashboard** (link out to Grafana) — ingestion freshness, FileGen latency, SQL MI health.
+6. **Ops dashboard** (link out to Grafana) — ingestion freshness, FileGen latency, SQL Server health.
 
 ---
 
@@ -258,15 +282,14 @@ Repository layout (proposed for `formula1sredemo`):
   main.bicep
   modules/
     network.bicep         # vnet, subnets, NSGs, private DNS
-    sqlmi.bicep           # managed instance + private endpoint
-    vm.bicep              # Windows Server + AMA + DCR association
+    vm.bicep              # Windows Server + AMA + DCR association + SQL Server install (via runCommand)
     appservice.bicep      # plan, app, VNet integration, Key Vault refs
     monitoring.bicep      # Log Analytics, Monitor Workspace, DCR, alerts
     keyvault.bicep
   parameters/
     dev.bicepparam
 /src
-  ingestion/              # Python — FastF1 → SQL MI
+  ingestion/              # Python — FastF1 → SQL Server (on VM)
   filegenerator/          # .NET 8 minimal API
   web/                    # ASP.NET Core 8 Blazor Server
 /scripts
@@ -286,7 +309,8 @@ Repository layout (proposed for `formula1sredemo`):
 - **OIDC federated credential** to a service principal scoped to the resource group.
 
 ### 8.2 Cost Guardrails
-- No auto-shutdown (per customer direction). Operator stops VM and pauses SQL MI between demos.
+- No auto-shutdown (per customer direction). Operator stops the VM between demos
+  (SQL Server stops with it).
 - Tag all resources `demo=f1-nbcu`, `owner=eric.wilson@microsoft.com`, `auto-stop=manual`.
 
 ---
@@ -327,7 +351,7 @@ Repository layout (proposed for `formula1sredemo`):
 | Term | Meaning |
 |------|---------|
 | FastF1 | Open-source Python library exposing the official F1 timing API and telemetry. |
-| SQL MI | Azure SQL Managed Instance — PaaS SQL with near 100% on-prem SQL Server feature parity. |
+| SQL Server (Dev Edition) | Free, full-featured SQL Server SKU for non-production use. Installed on the demo VM as the data tier. |
 | AMA | Azure Monitor Agent — unified data collection agent for VMs. |
 | DCR | Data Collection Rule — declarative config for AMA. |
 | AMW | Azure Monitor Workspace — managed Prometheus backend. |

@@ -37,7 +37,7 @@ public static class HealthEndpoints
             return Results.Json(new
             {
                 status = "ok",
-                sqlMi = sqlStatus,
+                sqlServer = sqlStatus,
                 cacheSizeMb = sizeBytes / 1024 / 1024
             });
         })

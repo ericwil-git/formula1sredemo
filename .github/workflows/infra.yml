@@ -39,7 +39,7 @@ jobs:
 
       - name: Bicep what-if
         env:
-          SQL_MI_PWD: ${{ secrets.SQL_MI_PWD }}
+          SQL_SA_PWD: ${{ secrets.SQL_SA_PWD }}
           VM_PWD: ${{ secrets.VM_PWD }}
           FILEGEN_API_KEY: ${{ secrets.FILEGEN_API_KEY }}
         run: |
@@ -47,7 +47,7 @@ jobs:
             --location $LOCATION \
             --template-file $TEMPLATE \
             --parameters $PARAMETERS \
-            --parameters sqlMiAdminPassword=$SQL_MI_PWD \
+            --parameters sqlServerSaPassword=$SQL_SA_PWD \
                          vmAdminPassword=$VM_PWD \
                          fileGeneratorApiKey=$FILEGEN_API_KEY
 
@@ -67,7 +67,7 @@ jobs:
 
       - name: Validate
         env:
-          SQL_MI_PWD: ${{ secrets.SQL_MI_PWD }}
+          SQL_SA_PWD: ${{ secrets.SQL_SA_PWD }}
           VM_PWD: ${{ secrets.VM_PWD }}
           FILEGEN_API_KEY: ${{ secrets.FILEGEN_API_KEY }}
         run: |
@@ -75,13 +75,13 @@ jobs:
             --location $LOCATION \
             --template-file $TEMPLATE \
             --parameters $PARAMETERS \
-            --parameters sqlMiAdminPassword=$SQL_MI_PWD \
+            --parameters sqlServerSaPassword=$SQL_SA_PWD \
                          vmAdminPassword=$VM_PWD \
                          fileGeneratorApiKey=$FILEGEN_API_KEY
 
       - name: Deploy
         env:
-          SQL_MI_PWD: ${{ secrets.SQL_MI_PWD }}
+          SQL_SA_PWD: ${{ secrets.SQL_SA_PWD }}
           VM_PWD: ${{ secrets.VM_PWD }}
           FILEGEN_API_KEY: ${{ secrets.FILEGEN_API_KEY }}
         run: |
@@ -90,6 +90,6 @@ jobs:
             --location $LOCATION \
             --template-file $TEMPLATE \
             --parameters $PARAMETERS \
-            --parameters sqlMiAdminPassword=$SQL_MI_PWD \
+            --parameters sqlServerSaPassword=$SQL_SA_PWD \
                          vmAdminPassword=$VM_PWD \
                          fileGeneratorApiKey=$FILEGEN_API_KEY
