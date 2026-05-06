@@ -3,7 +3,20 @@
 **Customer:** Mike Donoghue, NBCU Sports
 **Author:** Eric Wilson, Microsoft (Prin Cloud Solution Architect)
 **Repository:** https://github.com/ericwil-git/formula1sredemo
-**Status:** v0.2 — draft for Copilot-assisted implementation
+**Status:** v0.4 — deployed and serving live 2026 race data
+**Live demo:** <https://app-f1demo-wr4dcd.azurewebsites.net>
+
+> **Change log**
+> - **v0.4 (2026-05-06):** five Blazor pages live with filters; lap-time
+>   distribution box plot, tyre stint Gantt, Q1→Q2→Q3 progression charts;
+>   Key Vault private endpoint in `snet-pe` with `publicNetworkAccess=Disabled`;
+>   FileGenerator running as a Windows service with KV-backed config via the
+>   VM managed identity; `f1-ingest` orchestration loop populated 2026
+>   rounds 1–3 with telemetry (3.9 M telemetry rows in 9 minutes).
+> - **v0.3 (2026-05-01):** data tier pivoted from Azure SQL Managed Instance
+>   to SQL Server 2022 Developer Edition on the VM (MCAPS deny policy +
+>   Entra Directory Readers blocker; see §3.1).
+> - **v0.2 (2026-04):** original Copilot-implementation draft.
 **Region:** Central US
 
 ---
@@ -264,43 +277,68 @@ All endpoints require header `X-Api-Key: <key>`. All return `Content-Type` match
 
 ## 7. UI Scenarios (App Service)
 
-1. **Season browser** — pick year → list of events with round, country, date.
-2. **Race results** — finishing order, gap to leader, fastest lap, sortable table, pit stop count.
-3. **Qualifying breakdown** — Q1/Q2/Q3 grid with delta-to-pole bar chart.
-4. **Lap explorer** — pick driver + lap → speed, throttle, brake, gear traces over distance/time.
-5. **Driver compare** — overlay two drivers' lap times across a race; highlight sector-by-sector deltas.
-6. **Ops dashboard** (link out to Grafana) — ingestion freshness, FileGen latency, SQL Server health.
+All five pages are implemented and reachable from the live site
+(<https://app-f1demo-wr4dcd.azurewebsites.net>):
+
+1. **Season browser** (`/`) — year picker (default 2026, range 2018–2030);
+   table of events with race / quali deep links per round.
+2. **Race results** (`/race/{year}/{round}`):
+   - **Driver dropdown** filter applied to every chart and the table.
+   - **Position-by-lap** line chart, one line per driver.
+   - **Lap-time distribution** box plot per driver. Outlier laps slower than
+     110% of the driver's median (pit stops, safety-car laps) are trimmed so
+     the IQR boxes are readable; drivers sorted by median ascending.
+   - **Tyre stint Gantt** — horizontal bars colored by compound
+     (SOFT/MEDIUM/HARD/INTERMEDIATE/WET); multiple stints per driver.
+   - Lap-by-lap table (capped at 200 rows when viewing all drivers).
+3. **Qualifying** (`/qualifying/{year}/{round}`):
+   - **Session selector** — All (Q1+Q2+Q3) | Q1 | Q2 | Q3.
+   - **Driver dropdown** filter.
+   - When session = All: the existing Q1/Q2/Q3 grid + delta-to-pole bar chart.
+   - When session = Qx: filtered to drivers who set a time in that session,
+     sorted fastest-first, chart switched to raw QxMs.
+   - **Q1 → Q2 → Q3 progression** line chart — always visible; one line per
+     driver across the three sessions, with gaps where they were eliminated.
+4. **Lap explorer** (`/lap-explorer`) — telemetry overlay (speed line chart
+   + throttle/brake/gear chart) for any driver/lap.
+5. **Driver compare** (`/compare`) — lap-time overlay for two drivers across
+   a race.
+6. **Ops dashboard** (link out to Grafana) — ingestion freshness, FileGen
+   latency, SQL Server health. *(Pending; see §10.)*
 
 ---
 
 ## 8. Infrastructure as Code (Bicep)
 
-Repository layout (proposed for `formula1sredemo`):
+Actual layout (matches HEAD of `main`):
 
 ```
 /infra
-  main.bicep
+  main.bicep                       # subscription scope: creates RG + invokes modules
   modules/
-    network.bicep         # vnet, subnets, NSGs, private DNS
-    vm.bicep              # Windows Server + AMA + DCR association + SQL Server install (via runCommand)
-    appservice.bicep      # plan, app, VNet integration, Key Vault refs
-    monitoring.bicep      # Log Analytics, Monitor Workspace, DCR, alerts
-    keyvault.bicep
+    network.bicep                  # vnet, 4 subnets, NSGs, route table, 2 private DNS zones
+    vm.bicep                       # Win Server 2022 + AMA + DCR association
+    appservice.bicep               # plan, app, VNet integration, KV refs
+    monitoring.bicep               # Log Analytics + AppInsights + AMW + DCR + alerts
+    keyvault.bicep                 # KV with RBAC + private endpoint
   parameters/
     dev.bicepparam
 /src
-  ingestion/              # Python — FastF1 → SQL Server (on VM)
-  filegenerator/          # .NET 8 minimal API
-  web/                    # ASP.NET Core 8 Blazor Server
+  ingestion/                       # Python 3.11 — FastF1 → SQL Server (pyodbc)
+  filegenerator/                   # .NET 8 minimal API, Windows service
+  web/                             # ASP.NET Core 8 Blazor Server
 /scripts
-  run-ingest.ps1
-  install-vm-deps.ps1     # invoked via Bicep runCommand
+  deploy-infra.sh                  # one-shot infra deploy from Mac (generates secrets)
+  install-vm-deps.ps1              # bootstraps the VM (Python, .NET runtime, ODBC 18, SQL Server install)
+  deploy-filegenerator.ps1         # full FileGenerator deploy from scratch on the VM
+  finish-filegenerator-deploy.ps1  # publish + service install (when source is already on disk)
+  run-ingest.ps1                   # operator wrapper around f1-ingest CLI
 /db
-  schema.sql
-  seed.sql
+  schema.sql                       # 8 tables + 3 indexes
+  seed.sql                         # placeholder
 /.github/workflows
-  infra.yml               # Bicep what-if + deploy (OIDC)
-  apps.yml                # build & deploy ingestion / filegen / web
+  infra.yml                        # Bicep what-if + deploy (OIDC)
+  apps.yml                         # build & deploy apps
 ```
 
 ### 8.1 Pipelines
@@ -313,36 +351,70 @@ Repository layout (proposed for `formula1sredemo`):
   (SQL Server stops with it).
 - Tag all resources `demo=f1-nbcu`, `owner=eric.wilson@microsoft.com`, `auto-stop=manual`.
 
+### 8.3 Key Vault hardening (added v0.4)
+- `pe-kv-f1demo-wr4dcd` private endpoint in `snet-pe` (10.20.3.4).
+- `publicNetworkAccess: Disabled`, `networkAcls.defaultAction: Deny`.
+- App Service reaches KV via VNet integration → `snet-appsvc-int` → `snet-pe`.
+- VM reaches KV via direct VNet route → `snet-pe`.
+- DNS A record `kv-f1demo-wr4dcd.privatelink.vaultcore.azure.net` → 10.20.3.4
+  resolves correctly from both consumers (verified).
+- This survives MCAPS auto-disable cycles that previously broke the demo.
+
 ---
 
 ## 9. Demo Storyline (for Mike)
 
 1. **The architecture** — open the Bicep module map; show how an enterprise three-tier looks in Central US.
-2. **The legacy tier** — RDP to the Windows Server, show FileGenerator console + scheduled ingestion task.
-3. **Trigger ingestion** — run `run-ingest.ps1 --year 2024 --events monaco --telemetry true`; watch Prometheus counters climb in Grafana.
-4. **The web app** — open `/race/2024/8` (Monaco). Show network call hitting the VM's `/files/race`; cached CSV appears on `D:\f1-files\`.
-5. **Telemetry deep-dive** — overlay Verstappen vs Leclerc lap 42; show the speed/throttle traces.
-6. **The SRE moment** — break something (stop FileGenerator), refresh the page, ask the **Observability Agent** "what's wrong with the F1 demo?" — it pulls from Log Analytics + Monitor Workspace and points at the failed service.
+2. **The legacy tier** — RDP to the Windows Server, show the running
+   `F1FileGenerator` Windows service and the local SQL Server install.
+3. **Trigger ingestion** — run `run-ingest.ps1 --year 2026 --events 1`;
+   watch Prometheus counters climb in Grafana.
+4. **The web app** — open `/race/2026/1` (Australia). Walk the
+   lap-time distribution (consistency story) and the tyre stint Gantt
+   (strategy story) together — these tell more than the position chart
+   does on its own.
+5. **Telemetry deep-dive** — `/lap-explorer` overlay Verstappen vs Norris
+   on Suzuka lap 30; show the speed/throttle traces.
+6. **The SRE moment** — break something (`Stop-Service F1FileGenerator`
+   from RDP), refresh the web app, ask the **Observability Agent** *"what's
+   wrong with the F1 demo?"* — it pulls from Log Analytics + Monitor
+   Workspace and points at the failed service.
 
 ---
 
 ## 10. Acceptance Criteria
 
-- [ ] `azd up` (or `make deploy`) provisions every resource in Central US from a clean subscription.
-- [ ] Ingestion of 2024 Monaco GP completes in < 5 minutes with telemetry enabled.
-- [ ] Web app loads `/race/2024/8` in < 3 seconds (cold cache) and < 500 ms (warm cache).
-- [ ] All three tiers emit metrics visible in the Azure Monitor Workspace.
-- [ ] Observability Agent can answer "show me FileGenerator errors in the last hour" against Log Analytics.
-- [ ] Tear-down: `az group delete` removes everything; no orphaned private endpoints.
+- [x] `scripts/deploy-infra.sh` provisions every resource in Central US from a clean subscription.
+- [x] Ingestion of 2026 rounds 1–3 with telemetry completes in <10 minutes (achieved: ~9 minutes, 3.9 M rows).
+- [x] Web app loads `/race/2026/1` in < 5 seconds (cold cache) and < 500 ms (warm cache).
+- [x] FileGenerator + Web both connect to KV via the private endpoint (verified after `publicNetworkAccess=Disabled`).
+- [x] Tear-down: `az group delete` + `az keyvault purge` removes everything.
+- [ ] **All three tiers emit metrics visible in the Azure Monitor Workspace** — partial; FileGen exposes `/metrics`, ingestion exposes `:9101`, but managed Prometheus scrape configs not yet wired.
+- [ ] **Observability Agent can answer "show me FileGenerator errors in the last hour"** — demo-ready storyline; needs Phase 1–3 work in §11.
 
 ---
 
-## 11. Open Items / Decisions Still Needed
+## 11. Open Items / Roadmap
 
-- **FastF1 license** — confirm OK for an internal Microsoft customer demo (MIT-licensed, attribution in repo README).
-- **Self-signed cert vs Let's Encrypt** for FileGenerator — self-signed for v1; revisit if we expose a public DNS name.
-- **Grafana** — managed Azure Managed Grafana ($) vs a Grafana container on the VM (free-ish). Default to managed for the polish.
-- **Telemetry sampling** — full 200Hz vs decimated to 10Hz to keep storage bounded across multiple seasons. Default v1: full Hz, single season.
+Resolved since v0.2:
+- ~~**FastF1 license**~~ — confirmed MIT, attribution in README.
+- ~~**Self-signed cert vs Let's Encrypt** for FileGenerator~~ — self-signed PFX
+  generated by `deploy-filegenerator.ps1` at `D:\f1demo\certs\filegen.pfx`
+  (5-year validity); App Service trusts via `WEBSITE_LOAD_ROOT_CERTIFICATES=*`.
+- ~~**Telemetry sampling**~~ — ingesting at full rate; 3.9 M rows for 3 races
+  is well under storage limits.
+
+Still open / next phases:
+- **OpenTelemetry tracing end-to-end** (Web → FileGen → SQL with shared
+  `traceparent`); biggest unlock for the Observability Agent demo.
+- **Custom Prometheus metrics + alerts**: per-endpoint p50/p95/p99 latency,
+  SQL query duration, cache hit/miss ratio, ingestion freshness gauge.
+- **Failure-injection scripts** (`scripts/break-service.ps1`,
+  `heal-service.ps1`) to make the SRE moment repeatable on demand.
+- **Azure Monitor Workbook** with three-tier health + latency drill-down +
+  ingestion freshness panels.
+- **Grafana** — Azure Managed Grafana for the polish; deferred until OTEL
+  metrics land.
 
 ---
 
