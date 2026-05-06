@@ -34,6 +34,14 @@ else
     <h2>Position by lap</h2>
     <canvas id="positionChart" height="120"></canvas>
 
+    <h2>Lap-time distribution</h2>
+    <p><em>Box = interquartile range (25–75th percentile). Diamond = median. Whiskers = min/max.</em></p>
+    <canvas id="lapBoxChart" height="120"></canvas>
+
+    <h2>Tyre stints</h2>
+    <p><em>Each row is a driver. Bars are colored by compound and span the laps run on those tyres.</em></p>
+    <canvas id="tyreGanttChart" height="200"></canvas>
+
     <h2>Lap-by-lap data</h2>
     var visible = FilteredRows().ToList();
     <p><em>showing @visible.Count rows@(visible.Count > 200 ? " (capped at 200)" : "")</em></p>
@@ -56,6 +64,11 @@ else
     private List<string> drivers = new();
     private string driverFilter = "";
     private bool _chartDirty;
+
+    private static readonly string[] Palette = new[] {
+        "#f78166","#58a6ff","#3fb950","#d29922","#a371f7",
+        "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff"
+    };
 
     protected override async Task OnParametersSetAsync()
     {
@@ -87,40 +100,140 @@ else
         var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
         var lapIdx    = CsvTable.IndexOf(table.Headers, "LapNumber");
         var posIdx    = CsvTable.IndexOf(table.Headers, "Position");
-        if (driverIdx < 0 || lapIdx < 0 || posIdx < 0) return;
+        var lapMsIdx  = CsvTable.IndexOf(table.Headers, "LapTimeMs");
+        var compIdx   = CsvTable.IndexOf(table.Headers, "Compound");
+        if (driverIdx < 0 || lapIdx < 0) return;
 
-        var rows = FilteredRows();
-        var byDriver = rows.GroupBy(r => r[driverIdx]);
-        var palette = new[] {
-            "#f78166","#58a6ff","#3fb950","#d29922","#a371f7",
-            "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff"
-        };
-        var idx = 0;
-        var datasets = new List<object>();
-        foreach (var g in byDriver)
+        var rows = FilteredRows().ToList();
+
+        // -------- 1. position-by-lap line chart -----------------
+        if (posIdx >= 0)
         {
-            var pts = g.Where(r => int.TryParse(r[lapIdx], out _) && int.TryParse(r[posIdx], out _))
-                       .Select(r => new { x = int.Parse(r[lapIdx]), y = int.Parse(r[posIdx]) })
-                       .OrderBy(p => p.x).ToArray();
-            if (pts.Length == 0) continue;
-            datasets.Add(new {
-                label = g.Key,
-                points = pts,
-                color = palette[idx++ % palette.Length]
-            });
+            var byDriver = rows.GroupBy(r => r[driverIdx]);
+            var idx = 0;
+            var datasets = new List<object>();
+            foreach (var g in byDriver)
+            {
+                var pts = g.Where(r => int.TryParse(r[lapIdx], out _) && int.TryParse(r[posIdx], out _))
+                           .Select(r => new { x = int.Parse(r[lapIdx]), y = int.Parse(r[posIdx]) })
+                           .OrderBy(p => p.x).ToArray();
+                if (pts.Length == 0) continue;
+                datasets.Add(new {
+                    label = g.Key,
+                    points = pts,
+                    color = Palette[idx++ % Palette.Length]
+                });
+            }
+            var posTitle = string.IsNullOrEmpty(driverFilter)
+                ? $"{Year} round {Round}"
+                : $"{Year} round {Round} — {driverFilter}";
+            await JS.InvokeVoidAsync("f1Charts.renderLineChart",
+                "positionChart", posTitle, datasets, "Lap");
         }
 
-        var title = string.IsNullOrEmpty(driverFilter)
-            ? $"{Year} round {Round}"
-            : $"{Year} round {Round} — {driverFilter}";
-        await JS.InvokeVoidAsync("f1Charts.renderLineChart",
-            "positionChart", title, datasets, "Lap");
+        // -------- 2. lap-time distribution (box) ----------------
+        if (lapMsIdx >= 0)
+        {
+            // Group by driver, compute 5-number summary in ms.
+            var statRows = rows.GroupBy(r => r[driverIdx])
+                .Select(g =>
+                {
+                    var times = g.Select(r => int.TryParse(r[lapMsIdx], out var v) ? v : 0)
+                                 .Where(v => v > 0).ToArray();
+                    return new { driver = g.Key, stats = LapStats.Compute(times) };
+                })
+                .Where(x => x.stats is not null && x.stats.Count >= 5)
+                // Sort by median ascending so fastest is leftmost
+                .OrderBy(x => x.stats!.Median)
+                .ToList();
+
+            var palette = Palette;
+            var i = 0;
+            var statsForJs = statRows.Select(x => new {
+                driver = x.driver,
+                min    = x.stats!.Min,
+                q1     = x.stats.Q1,
+                median = x.stats.Median,
+                q3     = x.stats.Q3,
+                max    = x.stats.Max,
+                color  = palette[i++ % palette.Length]
+            }).ToArray();
+
+            var boxTitle = string.IsNullOrEmpty(driverFilter)
+                ? "Lap-time distribution (ms)"
+                : $"Lap-time distribution — {driverFilter}";
+            await JS.InvokeVoidAsync("f1Charts.renderLapBoxChart",
+                "lapBoxChart", boxTitle, statsForJs, "Lap time (ms)");
+        }
+
+        // -------- 3. tyre stint Gantt ---------------------------
+        if (compIdx >= 0 && lapIdx >= 0)
+        {
+            // Walk laps in order per driver; group consecutive laps with the
+            // same compound into a stint segment.
+            var stints = new List<object>();
+            var driverList = string.IsNullOrEmpty(driverFilter)
+                ? drivers
+                : new List<string> { driverFilter };
+
+            foreach (var d in driverList)
+            {
+                var dRows = table.Rows
+                    .Where(r => string.Equals(r[driverIdx], d, StringComparison.OrdinalIgnoreCase))
+                    .Select(r => new
+                    {
+                        lap  = int.TryParse(r[lapIdx], out var l) ? l : 0,
+                        comp = r[compIdx]?.Trim().ToUpperInvariant() ?? ""
+                    })
+                    .Where(x => x.lap > 0 && !string.IsNullOrEmpty(x.comp))
+                    .OrderBy(x => x.lap)
+                    .ToArray();
+                if (dRows.Length == 0) continue;
+
+                var startLap = dRows[0].lap;
+                var startComp = dRows[0].comp;
+                var prevLap = dRows[0].lap;
+                for (var k = 1; k < dRows.Length; k++)
+                {
+                    if (dRows[k].comp != startComp)
+                    {
+                        stints.Add(new {
+                            driver = d,
+                            fromLap = startLap,
+                            toLap = prevLap,
+                            compound = startComp
+                        });
+                        startLap = dRows[k].lap;
+                        startComp = dRows[k].comp;
+                    }
+                    prevLap = dRows[k].lap;
+                }
+                stints.Add(new {
+                    driver = d,
+                    fromLap = startLap,
+                    toLap = prevLap,
+                    compound = startComp
+                });
+            }
+
+            await JS.InvokeVoidAsync("f1Charts.renderTyreGantt",
+                "tyreGanttChart",
+                $"{Year} round {Round} — tyre stints",
+                driverList,
+                stints);
+        }
+
         _chartDirty = false;
     }
 
     public async ValueTask DisposeAsync()
     {
-        try { await JS.InvokeVoidAsync("f1Charts.destroy", "positionChart"); }
+        try
+        {
+            await JS.InvokeVoidAsync("f1Charts.destroy", "positionChart");
+            await JS.InvokeVoidAsync("f1Charts.destroy", "lapBoxChart");
+            await JS.InvokeVoidAsync("f1Charts.destroy", "tyreGanttChart");
+        }
         catch { /* circuit may be disposed */ }
     }
 }

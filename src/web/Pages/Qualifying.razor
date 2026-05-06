@@ -42,6 +42,11 @@ else
     <h2>@ChartTitle</h2>
     <canvas id="qualiChart" height="120"></canvas>
 
+    <h2>Q1 → Q2 → Q3 progression</h2>
+    <p><em>One line per driver across the three sessions. Drivers eliminated
+    in Q1 only show a Q1 dot; Q2 elims show Q1+Q2; pole-fight survivors show all three.</em></p>
+    <canvas id="qualiProgressChart" height="180"></canvas>
+
     <h2>Results</h2>
     var visible = FilteredRows().ToList();
     <p><em>@visible.Count drivers</em></p>
@@ -187,12 +192,53 @@ else
 
         await JS.InvokeVoidAsync("f1Charts.renderBarChart",
             "qualiChart", ChartTitle, labels, values, "#f78166");
+
+        // -------- Q1 -> Q2 -> Q3 progression line per driver -----
+        var q1Idx = CsvTable.IndexOf(table.Headers, "Q1Ms");
+        var q2Idx = CsvTable.IndexOf(table.Headers, "Q2Ms");
+        var q3Idx = CsvTable.IndexOf(table.Headers, "Q3Ms");
+        if (q1Idx >= 0 && q2Idx >= 0 && q3Idx >= 0)
+        {
+            var palette = new[] {
+                "#f78166","#58a6ff","#3fb950","#d29922","#a371f7",
+                "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff"
+            };
+            int p = 0;
+            // Use ALL rows here regardless of session filter so users
+            // always see the full progression.
+            var rows = table.Rows.AsEnumerable();
+            if (!string.IsNullOrEmpty(driverFilter))
+            {
+                rows = rows.Where(r => string.Equals(r[driverIdx], driverFilter, StringComparison.OrdinalIgnoreCase));
+            }
+            var datasets = rows.Select(r =>
+            {
+                int? Parse(int idx) =>
+                    int.TryParse(r[idx], out var v) && v > 0 ? v : (int?)null;
+                return new {
+                    label = r[driverIdx],
+                    color = palette[p++ % palette.Length],
+                    points = new int?[] { Parse(q1Idx), Parse(q2Idx), Parse(q3Idx) }
+                };
+            }).ToArray();
+
+            await JS.InvokeVoidAsync("f1Charts.renderCategoryLineChart",
+                "qualiProgressChart",
+                $"{Year} round {Round} — progression",
+                new[] { "Q1", "Q2", "Q3" },
+                datasets,
+                "Time (ms)");
+        }
         _chartDirty = false;
     }
 
     public async ValueTask DisposeAsync()
     {
-        try { await JS.InvokeVoidAsync("f1Charts.destroy", "qualiChart"); }
+        try
+        {
+            await JS.InvokeVoidAsync("f1Charts.destroy", "qualiChart");
+            await JS.InvokeVoidAsync("f1Charts.destroy", "qualiProgressChart");
+        }
         catch { }
     }
 }
