@@ -135,12 +135,24 @@ else
         if (lapMsIdx >= 0)
         {
             // Group by driver, compute 5-number summary in ms.
+            // Drop outlier laps slower than 110% of the driver's median —
+            // these are pit-stop laps, safety-car laps, and out-laps that
+            // would otherwise crush the y-axis range.
             var statRows = rows.GroupBy(r => r[driverIdx])
                 .Select(g =>
                 {
-                    var times = g.Select(r => int.TryParse(r[lapMsIdx], out var v) ? v : 0)
-                                 .Where(v => v > 0).ToArray();
-                    return new { driver = g.Key, stats = LapStats.Compute(times) };
+                    var allTimes = g.Select(r => int.TryParse(r[lapMsIdx], out var v) ? v : 0)
+                                    .Where(v => v > 0).OrderBy(v => v).ToArray();
+                    if (allTimes.Length == 0)
+                        return new { driver = g.Key, stats = (LapStats.FiveNumber?)null };
+
+                    // Use the simple median to set a cutoff, then recompute
+                    // 5-number on the trimmed set so whiskers + IQR all
+                    // reflect representative race pace.
+                    var simpleMedian = allTimes[allTimes.Length / 2];
+                    var cutoff = simpleMedian * 1.10;
+                    var trimmed = allTimes.Where(v => v <= cutoff).ToArray();
+                    return new { driver = g.Key, stats = LapStats.Compute(trimmed) };
                 })
                 .Where(x => x.stats is not null && x.stats.Count >= 5)
                 // Sort by median ascending so fastest is leftmost
@@ -160,7 +172,7 @@ else
             }).ToArray();
 
             var boxTitle = string.IsNullOrEmpty(driverFilter)
-                ? "Lap-time distribution (ms)"
+                ? "Lap-time distribution (representative race pace, ms)"
                 : $"Lap-time distribution — {driverFilter}";
             await JS.InvokeVoidAsync("f1Charts.renderLapBoxChart",
                 "lapBoxChart", boxTitle, statsForJs, "Lap time (ms)");

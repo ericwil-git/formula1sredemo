@@ -14,7 +14,7 @@
     <title>F1 Insights — NBCU Sports Demo</title>
     <link href="css/site.css" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="~/js/charts.js"></script>
+    <script src="~/js/charts.js?v=@(System.Reflection.Assembly.GetExecutingAssembly().GetName().Version)"></script>
 </head>
 <body>
     <component type="typeof(App)" render-mode="ServerPrerendered" />

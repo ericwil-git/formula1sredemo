@@ -165,7 +165,7 @@ window.f1Charts = (function () {
         const compoundColors = {
             SOFT:         '#ff5d5d',
             MEDIUM:       '#ffd166',
-            HARD:         '#e8e8e8',
+            HARD:         '#9ad5ff',  // pale blue — distinct from MEDIUM and from page bg
             INTERMEDIATE: '#3fb950',
             WET:          '#58a6ff',
             UNKNOWN:      '#888'
@@ -222,9 +222,12 @@ window.f1Charts = (function () {
                 responsive: true, animation: false,
                 plugins: {
                     title: { display: !!title, text: title },
-                    legend: { labels: { filter: i => !i.text.includes('(#') } }
+                    legend: { labels: { filter: (i) => !(i.text && i.text.includes('(#')) } }
                 },
                 scales: {
+                    // Stacked X so multiple stints per driver render
+                    // side-by-side. Floating bars [from,to] still position
+                    // correctly because Chart.js respects the explicit pair.
                     x: { stacked: false, title: { display: true, text: 'Lap' } },
                     y: { stacked: true }
                 }
