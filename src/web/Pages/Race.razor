@@ -16,25 +16,36 @@ else if (table.Rows.Count == 0)
 }
 else
 {
-    <p><strong>@table.Rows.Count</strong> lap-rows across <strong>@DriverCount</strong> drivers.</p>
+    <p>
+        <strong>@table.Rows.Count</strong> total lap-rows across <strong>@drivers.Count</strong> drivers.
+        &nbsp;
+        <label>
+            Driver:
+            <select @bind="driverFilter" @bind:after="OnFilterChanged">
+                <option value="">All drivers</option>
+                @foreach (var d in drivers)
+                {
+                    <option value="@d">@d</option>
+                }
+            </select>
+        </label>
+    </p>
 
     <h2>Position by lap</h2>
     <canvas id="positionChart" height="120"></canvas>
 
     <h2>Lap-by-lap data</h2>
+    var visible = FilteredRows().ToList();
+    <p><em>showing @visible.Count rows@(visible.Count > 200 ? " (capped at 200)" : "")</em></p>
     <table>
         <thead><tr>@foreach (var h in table.Headers) { <th>@h</th> }</tr></thead>
         <tbody>
-            @foreach (var row in table.Rows.Take(200))
+            @foreach (var row in visible.Take(200))
             {
                 <tr>@foreach (var c in row) { <td>@c</td> }</tr>
             }
         </tbody>
     </table>
-    @if (table.Rows.Count > 200)
-    {
-        <p><em>(showing first 200 of @table.Rows.Count rows)</em></p>
-    }
 }
 
 @code {
@@ -42,29 +53,44 @@ else
     [Parameter] public int Round { get; set; }
 
     private CsvTable.Table? table;
-    private int DriverCount;
-    private bool _chartRendered;
+    private List<string> drivers = new();
+    private string driverFilter = "";
+    private bool _chartDirty;
 
     protected override async Task OnParametersSetAsync()
     {
         var raw = await FileGen.GetRaceCsvAsync(Year, Round);
         table = CsvTable.Parse(raw);
-        DriverCount = table.Rows
-            .Select(r => r[CsvTable.IndexOf(table.Headers, "Driver")])
-            .Distinct().Count();
-        _chartRendered = false;
+        var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
+        drivers = driverIdx < 0
+            ? new List<string>()
+            : table.Rows.Select(r => r[driverIdx]).Distinct().OrderBy(s => s).ToList();
+        driverFilter = "";
+        _chartDirty = true;
     }
+
+    private IEnumerable<IReadOnlyList<string>> FilteredRows()
+    {
+        if (table is null) return Array.Empty<IReadOnlyList<string>>();
+        if (string.IsNullOrEmpty(driverFilter)) return table.Rows;
+        var idx = CsvTable.IndexOf(table.Headers, "Driver");
+        if (idx < 0) return table.Rows;
+        return table.Rows.Where(r => string.Equals(r[idx], driverFilter, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void OnFilterChanged() => _chartDirty = true;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (table is null || table.Rows.Count == 0 || _chartRendered) return;
+        if (table is null || table.Rows.Count == 0 || !_chartDirty) return;
 
         var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
         var lapIdx    = CsvTable.IndexOf(table.Headers, "LapNumber");
         var posIdx    = CsvTable.IndexOf(table.Headers, "Position");
         if (driverIdx < 0 || lapIdx < 0 || posIdx < 0) return;
 
-        var byDriver = table.Rows.GroupBy(r => r[driverIdx]);
+        var rows = FilteredRows();
+        var byDriver = rows.GroupBy(r => r[driverIdx]);
         var palette = new[] {
             "#f78166","#58a6ff","#3fb950","#d29922","#a371f7",
             "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff"
@@ -84,9 +110,12 @@ else
             });
         }
 
+        var title = string.IsNullOrEmpty(driverFilter)
+            ? $"{Year} round {Round}"
+            : $"{Year} round {Round} — {driverFilter}";
         await JS.InvokeVoidAsync("f1Charts.renderLineChart",
-            "positionChart", $"{Year} round {Round}", datasets, "Lap");
-        _chartRendered = true;
+            "positionChart", title, datasets, "Lap");
+        _chartDirty = false;
     }
 
     public async ValueTask DisposeAsync()

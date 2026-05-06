@@ -16,16 +16,46 @@ else if (table.Rows.Count == 0)
 }
 else
 {
-    <h2>Delta to pole (ms)</h2>
+    <p>
+        <label>
+            Session:
+            <select @bind="sessionFilter" @bind:after="OnFilterChanged">
+                <option value="ALL">All (Q1+Q2+Q3)</option>
+                <option value="Q1">Q1</option>
+                <option value="Q2">Q2</option>
+                <option value="Q3">Q3</option>
+            </select>
+        </label>
+        &nbsp;
+        <label>
+            Driver:
+            <select @bind="driverFilter" @bind:after="OnFilterChanged">
+                <option value="">All drivers</option>
+                @foreach (var d in drivers)
+                {
+                    <option value="@d">@d</option>
+                }
+            </select>
+        </label>
+    </p>
+
+    <h2>@ChartTitle</h2>
     <canvas id="qualiChart" height="120"></canvas>
 
-    <h2>Q1 / Q2 / Q3</h2>
+    <h2>Results</h2>
+    var visible = FilteredRows().ToList();
+    <p><em>@visible.Count drivers</em></p>
     <table>
-        <thead><tr>@foreach (var h in table.Headers) { <th>@h</th> }</tr></thead>
+        <thead><tr>@foreach (var h in VisibleHeaders) { <th>@h</th> }</tr></thead>
         <tbody>
-            @foreach (var row in table.Rows)
+            @foreach (var row in visible)
             {
-                <tr>@foreach (var c in row) { <td>@c</td> }</tr>
+                <tr>
+                    @foreach (var idx in VisibleColumnIndexes)
+                    {
+                        <td>@row[idx]</td>
+                    }
+                </tr>
             }
         </tbody>
     </table>
@@ -36,34 +66,128 @@ else
     [Parameter] public int Round { get; set; }
 
     private CsvTable.Table? table;
-    private bool _chartRendered;
+    private List<string> drivers = new();
+    private string driverFilter = "";
+    private string sessionFilter = "ALL";
+    private bool _chartDirty;
+
+    private string ChartTitle => sessionFilter switch
+    {
+        "Q1" => "Q1 time (ms)",
+        "Q2" => "Q2 time (ms)",
+        "Q3" => "Q3 time (ms)",
+        _    => "Delta to pole (ms)"
+    };
+
+    private IReadOnlyList<string> VisibleHeaders
+    {
+        get
+        {
+            if (table is null) return Array.Empty<string>();
+            return VisibleColumnIndexes.Select(i => table.Headers[i]).ToArray();
+        }
+    }
+
+    private int[] VisibleColumnIndexes
+    {
+        get
+        {
+            if (table is null) return Array.Empty<int>();
+            // Always show Position, Driver, Team, then either the chosen Qx
+            // (single column) or all three (ALL).
+            string[] cols = sessionFilter switch
+            {
+                "Q1" => new[] { "Position", "Driver", "Team", "Q1Ms" },
+                "Q2" => new[] { "Position", "Driver", "Team", "Q2Ms" },
+                "Q3" => new[] { "Position", "Driver", "Team", "Q3Ms" },
+                _    => new[] { "Position", "Driver", "Team", "Q1Ms", "Q2Ms", "Q3Ms", "DeltaToPoleMs" }
+            };
+            return cols
+                .Select(c => CsvTable.IndexOf(table.Headers, c))
+                .Where(i => i >= 0)
+                .ToArray();
+        }
+    }
 
     protected override async Task OnParametersSetAsync()
     {
         var raw = await FileGen.GetQualifyingCsvAsync(Year, Round);
         table = CsvTable.Parse(raw);
-        _chartRendered = false;
+        var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
+        drivers = driverIdx < 0
+            ? new List<string>()
+            : table.Rows.Select(r => r[driverIdx]).Distinct().OrderBy(s => s).ToList();
+        driverFilter = "";
+        sessionFilter = "ALL";
+        _chartDirty = true;
     }
+
+    private IEnumerable<IReadOnlyList<string>> FilteredRows()
+    {
+        if (table is null) return Array.Empty<IReadOnlyList<string>>();
+        IEnumerable<IReadOnlyList<string>> rows = table.Rows;
+
+        if (!string.IsNullOrEmpty(driverFilter))
+        {
+            var idx = CsvTable.IndexOf(table.Headers, "Driver");
+            if (idx >= 0)
+            {
+                rows = rows.Where(r => string.Equals(r[idx], driverFilter, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        // For Q1/Q2/Q3 single-session views, drop drivers without a time.
+        if (sessionFilter is "Q1" or "Q2" or "Q3")
+        {
+            var col = sessionFilter + "Ms";
+            var idx = CsvTable.IndexOf(table.Headers, col);
+            if (idx >= 0)
+            {
+                rows = rows.Where(r => int.TryParse(r[idx], out var ms) && ms > 0);
+            }
+        }
+        return rows;
+    }
+
+    private void OnFilterChanged() => _chartDirty = true;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (table is null || table.Rows.Count == 0 || _chartRendered) return;
+        if (table is null || table.Rows.Count == 0 || !_chartDirty) return;
+
         var driverIdx = CsvTable.IndexOf(table.Headers, "Driver");
-        var deltaIdx  = CsvTable.IndexOf(table.Headers, "DeltaToPoleMs");
-        if (driverIdx < 0 || deltaIdx < 0) return;
+        if (driverIdx < 0) return;
 
         var labels = new List<string>();
         var values = new List<double>();
-        foreach (var row in table.Rows)
+
+        if (sessionFilter == "ALL")
         {
-            if (!double.TryParse(row[deltaIdx], out var v)) continue;
-            labels.Add(row[driverIdx]);
-            values.Add(v);
+            var deltaIdx = CsvTable.IndexOf(table.Headers, "DeltaToPoleMs");
+            if (deltaIdx < 0) return;
+            foreach (var row in FilteredRows())
+            {
+                if (!double.TryParse(row[deltaIdx], out var v)) continue;
+                labels.Add(row[driverIdx]);
+                values.Add(v);
+            }
+        }
+        else
+        {
+            var col = sessionFilter + "Ms";
+            var idx = CsvTable.IndexOf(table.Headers, col);
+            if (idx < 0) return;
+            foreach (var row in FilteredRows().OrderBy(r => int.TryParse(r[idx], out var ms) ? ms : int.MaxValue))
+            {
+                if (!double.TryParse(row[idx], out var v)) continue;
+                labels.Add(row[driverIdx]);
+                values.Add(v);
+            }
         }
 
         await JS.InvokeVoidAsync("f1Charts.renderBarChart",
-            "qualiChart", "Delta to pole (ms)", labels, values, "#f78166");
-        _chartRendered = true;
+            "qualiChart", ChartTitle, labels, values, "#f78166");
+        _chartDirty = false;
     }
 
     public async ValueTask DisposeAsync()
