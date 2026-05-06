@@ -124,6 +124,9 @@ module keyvault 'modules/keyvault.bicep' = {
     sqlConnectionString: 'Server=localhost,1433;Database=f1demo;User Id=sa;Password=${sqlServerSaPassword};Encrypt=True;TrustServerCertificate=True;'
     appServicePrincipalId: appservice.outputs.principalId
     vmPrincipalId: vm.outputs.principalId
+    peSubnetId: network.outputs.peSubnetId
+    keyVaultPrivateDnsZoneId: network.outputs.keyVaultPrivateDnsZoneId
+    publicNetworkAccess: 'Disabled'
   }
 }
 
