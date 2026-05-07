@@ -43,12 +43,22 @@ service won't restart). The web tier is now returning 502s.
 ./scripts/break/filegen.sh
 
 # Wait ~30 seconds. Refresh the page in the browser.
-# Browser shows: 502 Bad Gateway (or the exception page if you're already on it).
+# Browser shows:
+#   - banner: "No race data available. The database may be empty."
+#   - Blazor unhandled-error toast at the bottom of the page
+#   - HTTP 200 (the web tier swallows the upstream exception and renders
+#     a degraded page — classic "soft failure" SRE story).
+# In App Insights, dependencies | where success == false shows the
+# failed GET /files/race calls with resultCode "Canceled" and ~100s duration
+# (HttpClient timeout).
 ```
 
 **On stage:**
 
-> "Notice the page is broken. Let me ask the SRE Agent what's wrong."
+> "The page is broken — no race data, error toast at the bottom. The
+> HTTP code is 200 even though the page is degraded — classic
+> soft-failure pattern that monitoring on status codes alone would miss.
+> Let me ask the SRE Agent what's wrong."
 
 Open the SRE Agent tab. Ask:
 
@@ -57,8 +67,8 @@ Open the SRE Agent tab. Ask:
 Expected response shape:
 
 - "The `F1FileGenerator` Windows service on `vm-f1demo-win` is **stopped**."
-- Cites `alert-f1demo-filegen-errors` or the recent dependency failures
-  in App Insights.
+- Cites failed dependencies (`GET /files/race`, resultCode `Canceled`,
+  ~100s duration) from `cloud_RoleName=F1.Web`.
 - Suggests `Start-Service F1FileGenerator`.
 
 **Heal:**
