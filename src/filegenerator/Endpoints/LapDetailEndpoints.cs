@@ -47,9 +47,11 @@ public static class LapDetailEndpoints
             var cacheKey = $"lap-{year}-{round}-{session}-{driver}-{lap}.{format}";
             if (cache.TryGetCachedPath(cacheKey, out var cached))
             {
+                Metrics.RecordCacheHit("lap-detail");
                 var bytes = await File.ReadAllBytesAsync(cached, ct);
                 return Results.File(bytes, format == "csv" ? "text/csv" : "application/json");
             }
+            Metrics.RecordCacheMiss("lap-detail");
 
             void Bind(Microsoft.Data.SqlClient.SqlParameterCollection p)
             {
@@ -67,7 +69,7 @@ public static class LapDetailEndpoints
                     var csv = await SqlQueryHelpers.ExecuteCsvAsync(db, Sql, Bind, ct);
                     await cache.WriteAsync(cacheKey, "csv",
                         new MemoryStream(Encoding.UTF8.GetBytes(csv)), ct);
-                    Metrics.FilesGenerated.WithLabels("lap-detail", "csv").Inc();
+                    Metrics.RecordFileGenerated("lap-detail", "csv");
                     return Results.Text(csv, "text/csv", Encoding.UTF8);
                 }
                 else
@@ -77,13 +79,13 @@ public static class LapDetailEndpoints
                     var json = System.Text.Json.JsonSerializer.Serialize(payload);
                     await cache.WriteAsync(cacheKey, "json",
                         new MemoryStream(Encoding.UTF8.GetBytes(json)), ct);
-                    Metrics.FilesGenerated.WithLabels("lap-detail", "json").Inc();
+                    Metrics.RecordFileGenerated("lap-detail", "json");
                     return Results.Text(json, "application/json", Encoding.UTF8);
                 }
             }
             catch (Microsoft.Data.SqlClient.SqlException ex)
             {
-                Metrics.SqlErrors.WithLabels("lap-detail").Inc();
+                Metrics.RecordSqlError("lap-detail");
                 return Results.Problem(
                     statusCode: 502,
                     title: "SQL Server unreachable",

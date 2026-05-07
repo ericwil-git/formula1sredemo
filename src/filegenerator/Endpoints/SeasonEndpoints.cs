@@ -37,9 +37,11 @@ public static class SeasonEndpoints
             var cacheKey = $"season-{year}.{format}";
             if (cache.TryGetCachedPath(cacheKey, out var cached))
             {
+                Metrics.RecordCacheHit("season");
                 var bytes = await File.ReadAllBytesAsync(cached, ct);
                 return Results.File(bytes, format == "csv" ? "text/csv" : "application/json");
             }
+            Metrics.RecordCacheMiss("season");
 
             try
             {
@@ -49,7 +51,7 @@ public static class SeasonEndpoints
                         p => p.AddWithValue("@year", year), ct);
                     await cache.WriteAsync(cacheKey, "csv",
                         new MemoryStream(Encoding.UTF8.GetBytes(csv)), ct);
-                    Metrics.FilesGenerated.WithLabels("season", "csv").Inc();
+                    Metrics.RecordFileGenerated("season", "csv");
                     return Results.Text(csv, "text/csv", Encoding.UTF8);
                 }
                 else
@@ -59,13 +61,13 @@ public static class SeasonEndpoints
                     var json = System.Text.Json.JsonSerializer.Serialize(new { year, rows });
                     await cache.WriteAsync(cacheKey, "json",
                         new MemoryStream(Encoding.UTF8.GetBytes(json)), ct);
-                    Metrics.FilesGenerated.WithLabels("season", "json").Inc();
+                    Metrics.RecordFileGenerated("season", "json");
                     return Results.Text(json, "application/json", Encoding.UTF8);
                 }
             }
             catch (Microsoft.Data.SqlClient.SqlException ex)
             {
-                Metrics.SqlErrors.WithLabels("season").Inc();
+                Metrics.RecordSqlError("season");
                 return Results.Problem(
                     statusCode: 502,
                     title: "SQL Server unreachable",

@@ -48,8 +48,10 @@ public static class RaceEndpoints
             var cacheKey = $"race-{year}-{round}.{format}";
             if (cache.TryGetCachedPath(cacheKey, out var cached))
             {
+                Metrics.RecordCacheHit("race");
                 return await ServeCachedAsync(cached, format, ct);
             }
+            Metrics.RecordCacheMiss("race");
 
             try
             {
@@ -62,7 +64,7 @@ public static class RaceEndpoints
                     }, ct);
                     await cache.WriteAsync(cacheKey, "csv",
                         new MemoryStream(Encoding.UTF8.GetBytes(csv)), ct);
-                    Metrics.FilesGenerated.WithLabels("race", "csv").Inc();
+                    Metrics.RecordFileGenerated("race", "csv");
                     return Results.Text(csv, "text/csv", Encoding.UTF8);
                 }
                 else
@@ -76,12 +78,13 @@ public static class RaceEndpoints
                     var json = System.Text.Json.JsonSerializer.Serialize(payload);
                     await cache.WriteAsync(cacheKey, "json",
                         new MemoryStream(Encoding.UTF8.GetBytes(json)), ct);
-                    Metrics.FilesGenerated.WithLabels("race", "json").Inc();
+                    Metrics.RecordFileGenerated("race", "json");
                     return Results.Text(json, "application/json", Encoding.UTF8);
                 }
             }
             catch (Microsoft.Data.SqlClient.SqlException ex)
             {
+                Metrics.RecordSqlError("race");
                 return Results.Problem(
                     statusCode: 502,
                     title: "SQL Server unreachable",

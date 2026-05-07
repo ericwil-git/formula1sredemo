@@ -14,6 +14,10 @@ dependencies = [
     "pandas>=2.2.0",
     "pyodbc>=5.1.0",
     "prometheus-client>=0.20.0",
+    # OTel distro for App Insights. Auto-configures via env var
+    # APPLICATIONINSIGHTS_CONNECTION_STRING. Used to emit the
+    # f1_ingest_runs counter that the "ingest stale" alert keys off.
+    "azure-monitor-opentelemetry>=1.6.0",
 ]
 
 [project.scripts]

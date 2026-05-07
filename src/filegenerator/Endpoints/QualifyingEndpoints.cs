@@ -54,9 +54,11 @@ public static class QualifyingEndpoints
             var cacheKey = $"qualifying-{year}-{round}.{format}";
             if (cache.TryGetCachedPath(cacheKey, out var cached))
             {
+                Metrics.RecordCacheHit("qualifying");
                 var bytes = await File.ReadAllBytesAsync(cached, ct);
                 return Results.File(bytes, format == "csv" ? "text/csv" : "application/json");
             }
+            Metrics.RecordCacheMiss("qualifying");
 
             try
             {
@@ -69,7 +71,7 @@ public static class QualifyingEndpoints
                     }, ct);
                     await cache.WriteAsync(cacheKey, "csv",
                         new MemoryStream(Encoding.UTF8.GetBytes(csv)), ct);
-                    Metrics.FilesGenerated.WithLabels("qualifying", "csv").Inc();
+                    Metrics.RecordFileGenerated("qualifying", "csv");
                     return Results.Text(csv, "text/csv", Encoding.UTF8);
                 }
                 else
@@ -82,13 +84,13 @@ public static class QualifyingEndpoints
                     var json = System.Text.Json.JsonSerializer.Serialize(new { year, round, rows });
                     await cache.WriteAsync(cacheKey, "json",
                         new MemoryStream(Encoding.UTF8.GetBytes(json)), ct);
-                    Metrics.FilesGenerated.WithLabels("qualifying", "json").Inc();
+                    Metrics.RecordFileGenerated("qualifying", "json");
                     return Results.Text(json, "application/json", Encoding.UTF8);
                 }
             }
             catch (Microsoft.Data.SqlClient.SqlException ex)
             {
-                Metrics.SqlErrors.WithLabels("qualifying").Inc();
+                Metrics.RecordSqlError("qualifying");
                 return Results.Problem(
                     statusCode: 502,
                     title: "SQL Server unreachable",

@@ -162,6 +162,118 @@ resource sampleAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview'
   }
 }
 
+// ===========================================================================
+// Phase 2 alerts — query App Insights (workspace-based) for the OTel-exported
+// FileGenerator + Ingestion telemetry.
+// ===========================================================================
+
+// 1. FileGenerator p99 latency > 2s over a rolling 5m window.
+//    Targets the App Insights `requests` table, filtered to the FileGenerator
+//    cloud_RoleName so the alert is tier-specific (web-tier latency lives in
+//    a different rule, see roadmap Phase 3).
+resource alertFilegenP99 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
+  name: 'alert-${namePrefix}-filegen-p99-high'
+  location: location
+  tags: tags
+  properties: {
+    displayName: 'FileGenerator p99 latency > 2s (5m)'
+    description: 'FileGenerator request p99 above 2000 ms over a rolling 5m window. Indicates middle-tier slowness; check SQL query duration in the trace.'
+    enabled: true
+    severity: 2
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT5M'
+    scopes: [ai.id]
+    criteria: {
+      allOf: [
+        {
+          query: 'requests | where cloud_RoleName == "F1.FileGenerator" | summarize p99 = percentile(duration, 99) | where p99 > 2000'
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+    }
+  }
+}
+
+// 2. FileGenerator SQL errors > 0 over a rolling 5m window.
+//    Targets the customMetrics table populated by the OTel meter
+//    "F1.FileGenerator" (see src/filegenerator/Metrics.cs).
+resource alertSqlErrors 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
+  name: 'alert-${namePrefix}-sql-errors'
+  location: location
+  tags: tags
+  properties: {
+    displayName: 'FileGenerator SQL errors (5m)'
+    description: 'Any SQL exception in the FileGenerator middle tier over a 5m window. Severity 1 — the demo is degraded.'
+    enabled: true
+    severity: 1
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT5M'
+    scopes: [ai.id]
+    criteria: {
+      allOf: [
+        {
+          query: 'customMetrics | where name == "f1_filegen_sql_errors" | summarize Total = sum(valueSum) | where Total > 0'
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+    }
+  }
+}
+
+// 3. Ingestion stale: no successful ingestion run in the last 25 hours.
+//    The ingestion script increments customMetrics name="f1_ingest_runs"
+//    on success (see src/ingestion/src/f1_ingest/metrics.py).
+//    25h window so a daily cadence (~24h) doesn't false-positive on jitter.
+resource alertIngestStale 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
+  name: 'alert-${namePrefix}-ingest-stale'
+  location: location
+  tags: tags
+  properties: {
+    displayName: 'Ingestion stale (no successful run in 25h)'
+    description: 'No f1_ingest_runs metric received in 25h. Either the ingestion job failed or has not been triggered.'
+    enabled: true
+    severity: 3
+    evaluationFrequency: 'PT1H'
+    windowSize: 'PT25H'
+    scopes: [ai.id]
+    criteria: {
+      allOf: [
+        {
+          query: 'customMetrics | where name == "f1_ingest_runs" | summarize Runs = sum(valueSum)'
+          timeAggregation: 'Count'
+          operator: 'Equal'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+    }
+  }
+}
+
 output logAnalyticsWorkspaceId string = law.id
 output logAnalyticsWorkspaceName string = law.name
 output appInsightsId string = ai.id

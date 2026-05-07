@@ -10,6 +10,7 @@ using Azure.Security.KeyVault.Secrets;
 using F1.FileGenerator;
 using F1.FileGenerator.Endpoints;
 using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using Prometheus;
 using Serilog;
@@ -58,7 +59,12 @@ if (!string.IsNullOrWhiteSpace(aiConnectionString))
         .UseAzureMonitor(o =>
         {
             o.ConnectionString = aiConnectionString;
-        });
+        })
+        // Subscribe the Azure Monitor metric reader to our custom Meter so
+        // RecordCacheHit/RecordSqlError/RecordFileGenerated etc. land in
+        // App Insights -> customMetrics. Without this AddMeter() call the
+        // distro only exports the built-in ASP.NET Core / runtime meters.
+        .WithMetrics(b => b.AddMeter(F1.FileGenerator.Metrics.MeterName));
 
     // Capture log scopes + formatted message bodies so the App Insights
     // "traces" table is actually useful when correlating with spans.

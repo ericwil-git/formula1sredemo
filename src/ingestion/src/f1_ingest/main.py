@@ -302,6 +302,9 @@ def run(config: IngestionConfig) -> int:
              config.year, config.events, config.telemetry)
 
     metrics.start_server(config.metrics_port)
+    # Wire App Insights export (no-op when APPLICATIONINSIGHTS_CONNECTION_STRING
+    # is unset, e.g. local dev).
+    metrics.configure_app_insights()
     started = time.monotonic()
 
     loader = FastF1Loader(cache_dir=config.cache_dir)
@@ -338,6 +341,8 @@ def run(config: IngestionConfig) -> int:
 
         elapsed = time.monotonic() - started
         LOG.info("Ingestion finished in %.2fs.", elapsed)
+        # Heartbeat for the "ingest stale" alert.
+        metrics.record_successful_run(config.year)
         return 0
     except Exception:
         metrics.errors_total.inc()
@@ -345,6 +350,8 @@ def run(config: IngestionConfig) -> int:
         return 1
     finally:
         writer.close()
+        # Force-flush so the OTel exporter ships the heartbeat before we exit.
+        metrics.shutdown_otel()
 
 
 def cli() -> None:

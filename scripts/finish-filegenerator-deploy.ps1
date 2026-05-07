@@ -131,6 +131,23 @@ Write-Host '[3b/5] installing service...'
 [Environment]::SetEnvironmentVariable('Kestrel__CertificatePassword', $certPwdRaw,  'Machine')
 [Environment]::SetEnvironmentVariable('ASPNETCORE_ENVIRONMENT',       'Production', 'Machine')
 
+# Pull the App Insights connection string from KV via the VM MI and stamp it
+# as a machine env var. FileGen itself reads it via the KV config provider on
+# startup, but the Python ingestion job (run via Task Scheduler / run-ingest.ps1)
+# picks it up from the env so its OTel exporter knows where to send the
+# f1_ingest_runs heartbeat.
+try {
+    $tokenJson = Invoke-RestMethod -Headers @{ Metadata = 'true' } -Uri 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' -TimeoutSec 5
+    $vaultBase = $KeyVaultUri.TrimEnd('/')
+    $aiSecret = Invoke-RestMethod -Headers @{ Authorization = "Bearer $($tokenJson.access_token)" } -Uri "$vaultBase/secrets/applicationInsightsConnectionString?api-version=7.4" -TimeoutSec 10
+    if ($aiSecret -and $aiSecret.value) {
+        [Environment]::SetEnvironmentVariable('APPLICATIONINSIGHTS_CONNECTION_STRING', $aiSecret.value, 'Machine')
+        Write-Host '       APPLICATIONINSIGHTS_CONNECTION_STRING env var set (machine scope).'
+    }
+} catch {
+    Write-Warning "       Could not fetch AI conn string from KV via MI: $($_.Exception.Message). Ingestion will skip App Insights export."
+}
+
 New-NetFirewallRule -DisplayName 'FileGenerator 8443' -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
 # -------------------------------------------------------------------
