@@ -57,17 +57,17 @@ namespace F1.Web
 
     /// <summary>
     /// Stamps every telemetry item with a stable cloud role name so the
-    /// Application Insights Application Map labels this app "F1.Web".
+    /// Application Insights Application Map labels this app "F1.Web". We
+    /// must overwrite (not just set-if-empty) because the SDK's default
+    /// RoleEnvironmentTelemetryInitializer runs first on App Service and
+    /// sets RoleName to the site name (e.g. "app-f1demo-wr4dcd").
     /// </summary>
     internal sealed class CloudRoleNameInitializer : ITelemetryInitializer
     {
         private const string RoleName = "F1.Web";
         public void Initialize(ITelemetry telemetry)
         {
-            if (string.IsNullOrEmpty(telemetry.Context.Cloud.RoleName))
-            {
-                telemetry.Context.Cloud.RoleName = RoleName;
-            }
+            telemetry.Context.Cloud.RoleName = RoleName;
         }
     }
 }
