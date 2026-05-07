@@ -131,6 +131,17 @@ module keyvault 'modules/keyvault.bicep' = {
   }
 }
 
+module workbook 'modules/workbook.bicep' = {
+  scope: rg
+  name: 'workbook'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    tags: tags
+    appInsightsId: monitoring.outputs.appInsightsId
+  }
+}
+
 output resourceGroupName string = rg.name
 output webAppDefaultHostName string = appservice.outputs.defaultHostName
 output webAppName string = webAppName
