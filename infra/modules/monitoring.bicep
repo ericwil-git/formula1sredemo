@@ -238,21 +238,20 @@ resource alertSqlErrors 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previ
   }
 }
 
-// 3. Ingestion stale: no successful ingestion run in the last 25 hours.
+// 3. Ingestion stale: no successful ingestion run in the last 24 hours.
 //    The ingestion script increments customMetrics name="f1_ingest_runs"
 //    on success (see src/ingestion/src/f1_ingest/metrics.py).
-//    25h window so a daily cadence (~24h) doesn't false-positive on jitter.
 resource alertIngestStale 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
   name: 'alert-${namePrefix}-ingest-stale'
   location: location
   tags: tags
   properties: {
-    displayName: 'Ingestion stale (no successful run in 25h)'
-    description: 'No f1_ingest_runs metric received in 25h. Either the ingestion job failed or has not been triggered.'
+    displayName: 'Ingestion stale (no successful run in 24h)'
+    description: 'No f1_ingest_runs metric received in 24h. Either the ingestion job failed or has not been triggered.'
     enabled: true
     severity: 3
     evaluationFrequency: 'PT1H'
-    windowSize: 'PT25H'
+    windowSize: 'PT24H'
     scopes: [ai.id]
     criteria: {
       allOf: [
