@@ -167,37 +167,32 @@ New-Item -ItemType Directory -Force -Path "\$ScriptDir\logs" | Out-Null
 \$src = 'https://raw.githubusercontent.com/ericwil-git/formula1sredemo/main/scripts/vm/vm-traffic-loop.ps1'
 \$dst = Join-Path \$ScriptDir 'vm-traffic-loop.ps1'
 Invoke-WebRequest -Uri \$src -OutFile \$dst -UseBasicParsing
-Write-Output "[1/3] downloaded \$dst (\$((Get-Item \$dst).Length) bytes)"
+Write-Output ("[1/3] downloaded {0} ({1} bytes)" -f \$dst, (Get-Item \$dst).Length)
 
 # 2. Compute the trigger datetime. VM is UTC, so just parse the ISO string.
 \$trigger = New-ScheduledTaskTrigger -Once -At ([datetime]::Parse(\$StartUtc).ToUniversalTime())
 
 # 3. Build the action: invoke vm-traffic-loop.ps1 with our parameters.
-\$args = "-NoProfile -ExecutionPolicy Bypass -File `"\$dst`" " +
-        "-DurationMinutes \$DurationMinutes -TargetRps \$Rps -UserCount \$Users"
-\$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument \$args
+#    The script path has no spaces (D:\f1demo\traffic\vm-traffic-loop.ps1)
+#    so no quoting is needed -- which avoids the bash-heredoc-escapes-
+#    PowerShell-quotes-escapes nightmare.
+\$cmdArgs = "-NoProfile -ExecutionPolicy Bypass -File \$dst -DurationMinutes \$DurationMinutes -TargetRps \$Rps -UserCount \$Users"
+\$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument \$cmdArgs
 
-# 4. Settings: don't allow start if AC missing? -> N/A on a VM. Set hard
+# 4. Settings: no-battery flags are no-ops on a VM but harmless. Hard
 #    ExecutionTimeLimit so a hung loop can't run forever.
-\$settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes \$TimeLimitMin) `
-    -MultipleInstances IgnoreNew
+\$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes \$TimeLimitMin) -MultipleInstances IgnoreNew
 
-# 5. Run as SYSTEM, highest privileges, register (idempotent: re-register
-#    overwrites if the task name already exists).
+# 5. Run as SYSTEM, highest privileges. Re-register overwrites.
 \$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest -LogonType ServiceAccount
 
-Register-ScheduledTask -TaskName \$TaskName -Trigger \$trigger -Action \$action `
-    -Settings \$settings -Principal \$principal -Force | Out-Null
+Register-ScheduledTask -TaskName \$TaskName -Trigger \$trigger -Action \$action -Settings \$settings -Principal \$principal -Force | Out-Null
 
 # 6. Echo final state.
 \$task = Get-ScheduledTask -TaskName \$TaskName
 \$info = \$task | Get-ScheduledTaskInfo
-Write-Output "[2/3] registered task '\$TaskName'"
-Write-Output "[3/3] next run (VM local UTC): \$(\$info.NextRunTime)"
+Write-Output ("[2/3] registered task {0}" -f \$TaskName)
+Write-Output ("[3/3] next run (UTC):   {0}" -f \$info.NextRunTime)
 EOF
 
 az vm run-command invoke -g "$RG" -n "$VM" \
