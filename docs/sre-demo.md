@@ -113,7 +113,7 @@ echo
 # Wait ~5 min for alert-f1demo-sql-errors to fire (sev 1).
 ```
 
-**On stage** (workbook → **Service Health** tab):
+**On stage** (workbook → **Service Health** section):
 
 > "The `Failures` column on the **per-tier traffic** table jumped. Look at
 > the **SQL dependency health** panel — `success=false` rate spiked.
@@ -154,7 +154,7 @@ echo
 # Wait ~5 min for alert-f1demo-filegen-p99-high (sev 2).
 ```
 
-**On stage** (workbook → **Latency** tab):
+**On stage** (workbook → scroll to **Latency** section):
 
 > "Volume is normal. Look at the **percentiles** chart — p50 hasn't moved
 > but p99 climbed past 2 seconds. Drill into the **SQL query duration from
@@ -222,7 +222,7 @@ when nothing is "broken".
 ./scripts/break/stale-data.sh
 ```
 
-**On stage** (workbook → **Ingestion** tab):
+**On stage** (workbook → scroll to **Ingestion** section):
 
 > "The top tile is the data the ingest-stale alert keys off. Right now
 > Runs > 0 because we're running heartbeats from the demo. In a real

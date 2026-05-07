@@ -68,7 +68,7 @@ done
 |---|---|---|
 | 1 | https://app-f1demo-wr4dcd.azurewebsites.net/race/2026/3 | The live web app (the "user view") |
 | 2 | App Insights → Application Map | Three-node service map |
-| 3 | App Insights → Workbooks → "F1 SRE Demo — Service Overview" | Live three-tab workbook |
+| 3 | App Insights → Workbooks → "F1 SRE Demo — Service Overview" | Live three-section workbook (Service Health · Latency · Ingestion) |
 | 4 | Azure SRE Agent (or Observability Agent) | The Q&A surface |
 | 5 | Terminal | `cd ~/Projects/formula1-sre-demo/formula1sredemo` |
 
@@ -103,7 +103,7 @@ Click through:
 
 Click an arrow → show a Transaction Search example with a real waterfall.
 
-**Tab 3 (workbook, default Service Health tab):**
+**Tab 3 (workbook, scrolled to the Service Health section at top):**
 
 > "Right now all three rows are green. Per-tier traffic, zero failures,
 > sub-second p95. This is what 'healthy' looks like."
@@ -179,7 +179,7 @@ Switch to **Tab 1**. Reload.
 > Some are normal. There's nothing in the user-visible experience to
 > latch onto."
 
-Switch to **Tab 3** (workbook → click the **Latency** tab).
+Switch to **Tab 3** (workbook → scroll down to the **Latency** section).
 
 > "Volume is normal — see the top chart. But look at the percentiles.
 > p50 is right where it was. p95 climbed. **p99 went past 2 seconds.**
