@@ -27,6 +27,10 @@ param fileGeneratorApiKey string
 @secure()
 param sqlConnectionString string
 
+@description('Application Insights connection string — stored as a secret. Read by FileGenerator on startup so distributed traces from the VM tier flow into the same App Insights resource as the web tier.')
+@secure()
+param appInsightsConnectionString string
+
 @description('System-assigned principal ID of the App Service (for RBAC).')
 param appServicePrincipalId string
 
@@ -96,6 +100,15 @@ resource secretSqlConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: 'sqlConnectionString'
   properties: {
     value: sqlConnectionString
+    contentType: 'text/plain'
+  }
+}
+
+resource secretAppInsights 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: kv
+  name: 'applicationInsightsConnectionString'
+  properties: {
+    value: appInsightsConnectionString
     contentType: 'text/plain'
   }
 }

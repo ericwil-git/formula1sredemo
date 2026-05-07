@@ -122,6 +122,7 @@ module keyvault 'modules/keyvault.bicep' = {
     // FileGenerator + Ingestion both run on the VM and connect to the
     // local SQL Server install. Hostname is localhost; sa auth.
     sqlConnectionString: 'Server=localhost,1433;Database=f1demo;User Id=sa;Password=${sqlServerSaPassword};Encrypt=True;TrustServerCertificate=True;'
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     appServicePrincipalId: appservice.outputs.principalId
     vmPrincipalId: vm.outputs.principalId
     peSubnetId: network.outputs.peSubnetId

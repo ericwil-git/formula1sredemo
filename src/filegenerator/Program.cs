@@ -5,9 +5,12 @@
 
 using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using Azure.Identity;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using Azure.Security.KeyVault.Secrets;
 using F1.FileGenerator;
 using F1.FileGenerator.Endpoints;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Resources;
 using Prometheus;
 using Serilog;
 
@@ -22,10 +25,11 @@ builder.Host.UseWindowsService(options =>
 
 // ---------------------------------------------------------------------------
 // Key Vault config provider (optional). When KeyVault:Uri is set, the VM's
-// managed identity reads two secrets and aliases them to the FileGenerator
+// managed identity reads secrets and aliases them to the FileGenerator
 // config shape:
-//   fileGeneratorApiKey -> FileGenerator:ApiKey
-//   sqlConnectionString -> FileGenerator:SqlConnectionString
+//   fileGeneratorApiKey               -> FileGenerator:ApiKey
+//   sqlConnectionString               -> FileGenerator:SqlConnectionString
+//   applicationInsightsConnectionString -> ApplicationInsights:ConnectionString
 // ---------------------------------------------------------------------------
 var kvUri = builder.Configuration["KeyVault:Uri"];
 if (!string.IsNullOrWhiteSpace(kvUri))
@@ -33,6 +37,36 @@ if (!string.IsNullOrWhiteSpace(kvUri))
     builder.Configuration.AddAzureKeyVault(
         new SecretClient(new Uri(kvUri), new DefaultAzureCredential()),
         new F1KvSecretManager());
+}
+
+// ---------------------------------------------------------------------------
+// OpenTelemetry / Azure Monitor distro (Phase 1 of the SRE roadmap).
+// Auto-instruments ASP.NET Core, HttpClient, and Microsoft.Data.SqlClient,
+// so every web request shows up as a Web -> FileGen -> SQL waterfall in
+// Application Insights -> Transaction Search. The ConnectionString comes
+// from KV (mapped above). When it is missing (e.g. local `dotnet run`
+// without KV), we skip OTel entirely so startup still succeeds.
+// ---------------------------------------------------------------------------
+var aiConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
+if (!string.IsNullOrWhiteSpace(aiConnectionString))
+{
+    builder.Services
+        .AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(
+            serviceName: "F1.FileGenerator",
+            serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0"))
+        .UseAzureMonitor(o =>
+        {
+            o.ConnectionString = aiConnectionString;
+        });
+
+    // Capture log scopes + formatted message bodies so the App Insights
+    // "traces" table is actually useful when correlating with spans.
+    builder.Services.Configure<OpenTelemetryLoggerOptions>(o =>
+    {
+        o.IncludeFormattedMessage = true;
+        o.IncludeScopes = true;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -138,18 +172,21 @@ namespace F1.FileGenerator
     /// <summary>
     /// Maps Key Vault secret names to the .NET configuration shape this app
     /// expects. KV secret names are flat (no colons), and they're stored as
-    /// camelCase by Bicep, so we explicitly translate the two we care about.
+    /// camelCase by Bicep, so we explicitly translate the ones we care about.
     /// Any other secret in the vault is ignored to avoid surprise surface area.
     /// </summary>
     public sealed class F1KvSecretManager : Azure.Extensions.AspNetCore.Configuration.Secrets.KeyVaultSecretManager
     {
         public override bool Load(Azure.Security.KeyVault.Secrets.SecretProperties secret)
-            => secret.Name is "fileGeneratorApiKey" or "sqlConnectionString";
+            => secret.Name is "fileGeneratorApiKey"
+                           or "sqlConnectionString"
+                           or "applicationInsightsConnectionString";
 
         public override string GetKey(Azure.Security.KeyVault.Secrets.KeyVaultSecret secret) => secret.Name switch
         {
-            "fileGeneratorApiKey" => "FileGenerator:ApiKey",
-            "sqlConnectionString" => "FileGenerator:SqlConnectionString",
+            "fileGeneratorApiKey"               => "FileGenerator:ApiKey",
+            "sqlConnectionString"               => "FileGenerator:SqlConnectionString",
+            "applicationInsightsConnectionString" => "ApplicationInsights:ConnectionString",
             _ => secret.Name
         };
     }
