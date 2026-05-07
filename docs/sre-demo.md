@@ -16,12 +16,24 @@ az vm get-instance-view -g rg-f1demo-centeral -n vm-f1demo-win \
   --query "instanceView.statuses[?starts_with(code, 'PowerState')].displayStatus" -o tsv
 # expect: VM running
 
-# 3. Open the workbook in the portal:
+# 3. Pre-warm caches and seed App Insights with traffic so the workbook
+#    has populated charts the moment you switch to it.
+./scripts/generate-traffic.sh burst
+
+# 4. (Recommended) start sustained background traffic in another terminal so
+#    the workbook charts continue moving during the demo. ~1 req/s, 30 min,
+#    Ctrl-C when done.
+./scripts/generate-traffic.sh sustained --rps 1 --users 2 --minutes 30 &
+TRAFFIC_PID=$!
+
+# 5. Open the workbook in the portal:
 #    Application Insights `appi-f1demo` -> Workbooks ->
 #      "F1 SRE Demo — Service Overview"
 #    Pin to dashboard for the demo.
 
-# 4. Open a second tab to the SRE Agent / Observability Agent in the portal.
+# 6. Open a second tab to the SRE Agent / Observability Agent in the portal.
+
+# When the demo is over: kill $TRAFFIC_PID
 ```
 
 ## Demo arc (~25 min total)

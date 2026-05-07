@@ -38,15 +38,29 @@ curl -sk -o /dev/null -w "%{http_code}\n" https://app-f1demo-wr4dcd.azurewebsite
 # expect 200, page renders with data
 
 # 2. Pre-warm the cache so the first page-load on stage is fast.
-for p in / /race/2026/1 /race/2026/2 /race/2026/3 /qualifying/2026/3 /lap-explorer; do
-  curl -sk -o /dev/null "https://app-f1demo-wr4dcd.azurewebsites.net${p}"
-done
+./scripts/generate-traffic.sh burst
 
-# 3. Confirm all five heal scripts run clean (idempotent).
+# 3. Start sustained background traffic so the workbook charts are LIVE
+#    (not flatlined) when you switch to them on stage. Run this in its
+#    own terminal/tmux pane and forget about it -- you can leave it
+#    running through the entire demo. ~1 req/s, 4 fake users, 60 min.
+./scripts/generate-traffic.sh sustained --rps 1 --users 4 --minutes 60 &
+TRAFFIC_PID=$!
+echo "background traffic PID=$TRAFFIC_PID"
+# Kill it when the demo is over: kill $TRAFFIC_PID
+
+# 4. Confirm all five heal scripts run clean (idempotent).
 for s in filegen sql slow-query disk-fill stale-data; do
   ./scripts/heal/$s.sh > /dev/null 2>&1 && echo "  heal/$s OK" || echo "  heal/$s FAIL"
 done
 ```
+
+> **Why background traffic matters.** A workbook that says
+> "0 requests in the last 5 minutes" looks broken even when nothing is
+> wrong. Sustained traffic keeps the percentile bands populated, the
+> volume timecharts moving, and the Application Map nodes "warm". When
+> you switch from the live web app to the workbook on stage, the
+> audience sees actual signal instead of empty charts.
 
 **Open these tabs in order, left → right (the order you'll switch through them):**
 
